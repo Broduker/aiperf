@@ -8,6 +8,14 @@ sidebar-title: Kubernetes Flow
 
 This document describes the complete flow from user command to benchmark completion when running AIPerf on Kubernetes.
 
+The controller API can distribute a tokenizer from a mounted local directory,
+as well as a Hugging Face cache snapshot. The run's configured tokenizer names
+form the endpoint allowlist; local filesystem directories are never exposed
+without explicit configuration. The API preloads the tokenizer and packages
+only tokenizer files before workers download the bundle. Offline local loading
+does not resolve the directory as a HF repository ID. See
+[offline tokenizer directories](../kubernetes/configuration.md#offline-tokenizer-directories).
+
 ## Overview
 
 ```mermaid

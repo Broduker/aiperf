@@ -93,6 +93,24 @@ async def test_happy_path(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_download_local_tokenizer_path_preserves_url_characters(
+    tmp_path: Path,
+) -> None:
+    name = "/models/tokenizer #flash?version=1"
+    async with _stub_server() as (base_url, state):
+        state["tokenizer"] = name
+        state["bundle"] = _make_bundle({"tokenizer.json": b"{}"})
+        out = await download_tokenizer(
+            api_base_url=base_url,
+            name=name,
+            dest_root=tmp_path,
+            max_retries=1,
+            logger=logging.getLogger("test"),
+        )
+    assert (out / "tokenizer.json").read_text() == "{}"
+
+
+@pytest.mark.asyncio
 async def test_503_then_success(tmp_path: Path) -> None:
     async with _stub_server() as (base_url, state):
         state["bundle"] = _make_bundle({"tokenizer.json": b"{}"})

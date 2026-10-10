@@ -12,6 +12,14 @@ This reference documents the primary endpoints served by that process; it is not
 
 ---
 
+Tokenizer distribution is provided by the **benchmark controller API**, not
+this operator results server. Its internal
+`GET /api/tokenizer/{name:path}/bundle` endpoint serves configured HF snapshots
+or mounted local tokenizer directories to workers. Local paths must be explicitly
+configured in the run and mounted into the benchmark pods; arbitrary directories
+cannot be requested. See the offline tokenizer directory example in
+[configuration](configuration.md#offline-tokenizer-directories).
+
 ## How to reach the API
 
 The results server listens on `resultsServer.port` (default **`8081`**) inside the operator pod. Helm injects this as `AIPERF_RESULTS_SERVER_PORT`, which the server validates as an integer from 1 through 65535. It is fronted by the operator's Service, not exposed externally by default. Two common access patterns:

@@ -146,7 +146,7 @@ class FastAPIService(BaseComponentService):
         # Mount the tokenizer-bundle router (plain APIRouter factory, not a
         # BaseRouter plugin: it has no lifecycle and only closes over the
         # registry).
-        app.include_router(build_tokenizer_router())
+        app.include_router(build_tokenizer_router(self._tokenizers_to_warm()))
 
         return app
 

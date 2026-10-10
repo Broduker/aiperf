@@ -14,6 +14,7 @@ import io
 import tarfile
 from pathlib import Path
 from unittest.mock import MagicMock
+from urllib.parse import quote
 
 import pytest
 import zstandard
@@ -351,3 +352,64 @@ def test_materialize_bundle_uses_configured_size_cap(
 
     with pytest.raises(ValueError, match=f"cap of {cap} bytes"):
         tokenizer_router_mod._materialize_bundle(snap)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prewarmed", [False, True])
+async def test_local_directory_bundle_round_trip_without_hub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prewarmed: bool
+) -> None:
+    snapshot = _make_snapshot(
+        tmp_path, {"tokenizer.json": "{}", "tokenizer_config.json": "{}"}
+    )
+    hub_download = MagicMock(
+        side_effect=AssertionError("local directory must not use HF Hub")
+    )
+    monkeypatch.setattr("huggingface_hub.snapshot_download", hub_download)
+    name = str(snapshot)
+    if prewarmed:
+        await tokenizer_router_mod.prewarm_bundle(name)
+    app = FastAPI()
+    app.include_router(build_tokenizer_router([name]))
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/tokenizer/{quote(name, safe='/')}/bundle")
+    assert response.status_code == 200
+    assert set(_untar_names_and_sizes(response.content)) == {
+        "tokenizer.json",
+        "tokenizer_config.json",
+    }
+    hub_download.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_router_rejects_unconfigured_local_directory(tmp_path: Path) -> None:
+    snapshot = _make_snapshot(tmp_path, {"config.json": "{}"})
+    await tokenizer_router_mod.prewarm_bundle(str(snapshot))
+    for allowed_names in (None, [], ["org/model"]):
+        app = FastAPI()
+        app.include_router(build_tokenizer_router(allowed_names))
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/tokenizer/{snapshot}/bundle")
+        assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_resolve_missing_local_directory_returns_404(tmp_path: Path) -> None:
+    with pytest.raises(HTTPException, match="not mounted") as raised:
+        await tokenizer_router_mod._resolve_snapshot_dir(str(tmp_path / "missing"))
+    assert raised.value.status_code == 404
+
+
+def test_materialize_bundle_does_not_recurse_allowlisted_directory(
+    tmp_path: Path,
+) -> None:
+    snapshot = _make_snapshot(tmp_path, {"tokenizer.json": "{}"})
+    directory = snapshot / "config.json"
+    directory.mkdir()
+    (directory / "private-key").write_text("must not be exported")
+    payload = tokenizer_router_mod._materialize_bundle(snapshot)
+    assert set(_untar_names_and_sizes(payload)) == {"tokenizer.json"}

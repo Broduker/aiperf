@@ -261,3 +261,31 @@ class _FakeHfTokenizer:
 
     def __call__(self, text, **kwargs):
         return {"input_ids": []}
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_from_pretrained_local_directory_skips_hub_and_alias_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: bool
+) -> None:
+    if offline:
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    else:
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    with (
+        patch("huggingface_hub.snapshot_download") as download,
+        patch.object(Tokenizer, "resolve_alias") as resolve_alias,
+        patch(
+            "transformers.AutoTokenizer.from_pretrained",
+            return_value=_FakeHfTokenizer(),
+        ) as load,
+    ):
+        Tokenizer.from_pretrained(str(tmp_path))
+    load.assert_called_once_with(str(tmp_path), trust_remote_code=False)
+    download.assert_not_called()
+    resolve_alias.assert_not_called()
+
+
+def test_resolve_local_snapshot_missing_directory_raises(tmp_path: Path) -> None:
+    with pytest.raises(OSError, match="does not exist"):
+        Tokenizer._resolve_local_snapshot(str(tmp_path / "missing"), "main")

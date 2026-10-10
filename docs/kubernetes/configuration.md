@@ -231,6 +231,43 @@ and securityContext merging only apply to typed fields.
 | `shareProcessNamespace` | bool | Share a PID namespace across containers (chaos testing; keep `false` in production) |
 | `extraPodSpec` | map | Escape hatch: raw PodSpec keys merged last, overriding the typed fields above |
 
+### Offline tokenizer directories
+
+Mount a tokenizer-only directory into benchmark pods and set
+`spec.benchmark.tokenizer.name` to its absolute container path. The benchmark
+API loads and serves that directory without a Hugging Face download; worker
+pods receive the same tokenizer through the existing compressed bundle endpoint.
+Only tokenizer names configured for the current run can be requested. Weight
+files and directories are excluded from bundles. The results server's PVC is
+not automatically mounted into benchmark pods.
+
+```yaml
+spec:
+  benchmark:
+    tokenizer:
+      name: /models/tokenizers/my-model/revision
+  podTemplate:
+    env:
+      - name: HF_HUB_OFFLINE
+        value: "1"
+    volumes:
+      - name: model-tokenizers
+        persistentVolumeClaim:
+          claimName: model-tokenizers
+    volumeMounts:
+      - name: model-tokenizers
+        mountPath: /models/tokenizers
+        readOnly: true
+```
+
+The PVC must exist in the benchmark namespace and support the required node
+placement (use RWX for a shared multi-node mount). Populate it with the model's
+tokenizer files, including any required configuration, vocabularies, chat
+templates, and trusted custom Python modules; model weights are unnecessary.
+Pin the files using a versioned directory: `tokenizer.revision` selects HF Hub
+revisions, not versions inside a local directory. Local loading also works with
+`HF_HUB_OFFLINE=1`. Missing local directories fail without contacting HF Hub.
+
 ### Scheduling (`spec.scheduling`)
 
 For clusters using [Kueue](https://kueue.sigs.k8s.io/) for resource management:

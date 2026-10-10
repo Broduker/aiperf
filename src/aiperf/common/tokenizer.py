@@ -556,7 +556,7 @@ class Tokenizer:
 
         _ensure_deepseek_v32_config_registered()
 
-        if _is_offline_mode():
+        if Path(name).is_dir() or _is_offline_mode():
             tokenizer_instance = cls._from_pretrained_local(
                 AutoTokenizer.from_pretrained,
                 name,
@@ -634,7 +634,7 @@ class Tokenizer:
         trust_remote_code: bool = False,
         revision: str = "main",
     ) -> "Tokenizer":
-        """Load a tokenizer from local cache (offline mode).
+        """Load a tokenizer from a local directory or offline Hub cache.
 
         Resolves the cached snapshot directory via ``snapshot_download(
         local_files_only=True)`` and points ``AutoTokenizer`` at that local
@@ -665,7 +665,7 @@ class Tokenizer:
 
     @classmethod
     def _resolve_local_snapshot(cls, name: str, revision: str) -> str:
-        """Return the on-disk snapshot directory for *name* @ *revision*.
+        """Return a local directory or the cached snapshot for *name* @ *revision*.
 
         Tries the canonical repo ID first, then alias matches (e.g. ``gpt2``
         cached as ``openai-community/gpt2``). Raises ``OSError`` with a clear
@@ -673,6 +673,12 @@ class Tokenizer:
         """
         from huggingface_hub import snapshot_download
         from huggingface_hub.errors import LocalEntryNotFoundError
+
+        local_path = Path(name)
+        if local_path.is_dir():
+            return str(local_path)
+        if local_path.is_absolute() or name.startswith(("./", "../")):
+            raise OSError(f"Local tokenizer directory '{name}' does not exist")
 
         candidates = [name]
         if "/" not in name:

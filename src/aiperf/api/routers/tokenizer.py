@@ -138,7 +138,7 @@ def _materialize_bundle(snapshot_dir: Path) -> bytes:
     with _io.BytesIO() as raw_tar:
         with _tarfile.open(fileobj=raw_tar, mode="w", dereference=True) as tar:
             for entry in sorted(snapshot_dir.iterdir()):
-                if not _is_tokenizer_file(entry):
+                if not entry.is_file() or not _is_tokenizer_file(entry):
                     continue
                 tar.add(entry, arcname=entry.name)
         raw_size = raw_tar.tell()
@@ -163,11 +163,12 @@ def _stream_bytes(payload: bytes) -> AsyncIterator[bytes]:
 
 
 async def _resolve_snapshot_dir(name: str, revision: str = "main") -> Path:
-    """Return the local snapshot dir for ``name`` from the shared HF cache.
+    """Return a mounted tokenizer directory or a shared HF cache snapshot.
 
     Returns 503 when the cache is cold (worker pods retry through this) and
-    404 when HF Hub doesn't recognise the name. Never reaches the network at
-    request time.
+    404 when a local directory is missing or HF Hub doesn't recognise the name.
+    Never reaches the network at request time. Local directories are selected
+    directly; ``revision`` applies only to Hub snapshots.
     """
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import (
@@ -176,6 +177,14 @@ async def _resolve_snapshot_dir(name: str, revision: str = "main") -> Path:
         RepositoryNotFoundError,
         RevisionNotFoundError,
     )
+
+    local_path = Path(name)
+    if await asyncio.to_thread(local_path.is_dir):
+        return local_path
+    if local_path.is_absolute() or name.startswith(("./", "../")):
+        raise HTTPException(
+            status_code=404, detail=f"local tokenizer directory '{name}' is not mounted"
+        )
 
     try:
         path = await asyncio.to_thread(
@@ -233,13 +242,33 @@ def reset_cache_for_tests() -> None:
     _store.reset()
 
 
-def build_tokenizer_router() -> APIRouter:
-    """Return an APIRouter exposing ``GET /api/tokenizer/{name:path}/bundle``."""
+def build_tokenizer_router(tokenizer_names: list[str] | None = None) -> APIRouter:
+    """Serve bundles for configured tokenizers, including mounted directories.
+
+    Local directories are accessible only with an explicit run allowlist.
+    Without one, retain the legacy HF-repository-only router behavior.
+    """
+    allowed_names = frozenset(tokenizer_names) if tokenizer_names is not None else None
     router = APIRouter(
         prefix="/api/tokenizer", tags=["Tokenizer"], include_in_schema=False
     )
 
     async def _get_bundle_bytes(name: str) -> bytes:
+        if allowed_names is not None:
+            if name not in allowed_names:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"tokenizer '{name}' not configured for this run",
+                )
+        elif (
+            Path(name).is_absolute()
+            or name.startswith(("./", "../"))
+            or await asyncio.to_thread(Path(name).is_dir)
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail=f"local tokenizer '{name}' not configured for this run",
+            )
         cached = _store.bundles.get(name)
         if cached is not None:
             return cached

@@ -52,7 +52,7 @@ async def download_tokenizer(
         RuntimeError: 404 from server, or retries exhausted.
     """
     base = api_base_url.rstrip("/")
-    url = f"{base}/api/tokenizer/{name}/bundle"
+    url = f"{base}/api/tokenizer/{quote(name, safe='/')}/bundle"
     logger.info(f"download_tokenizer: starting for '{name}' from {url}")
     slug = slug_for_tokenizer(name)
     dest = dest_root / slug
