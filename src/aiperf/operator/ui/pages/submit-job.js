@@ -9,7 +9,7 @@ import {
   isTokenRequiredError,
   setSessionToken,
 } from '../lib/api.js';
-import { buildJobPath, navigate } from '../lib/router.js';
+import { buildJobPath, buildSweepPath, navigate } from '../lib/router.js';
 import { TokenModal } from '../components/token-modal.js';
 import { YamlEditor } from '../components/yaml-editor.js';
 
@@ -96,8 +96,11 @@ export function SubmitJob() {
     setSubmitError(null);
     setSubmitting(true);
     try {
-      const created = await api.createJob(manifest);
-      navigate(buildJobPath(created));
+      const isSweep = manifest.kind === 'AIPerfSweep';
+      const created = isSweep
+        ? await api.createSweep(manifest)
+        : await api.createJob(manifest);
+      navigate(isSweep ? buildSweepPath(created) : buildJobPath(created));
     } catch (error) {
       if (isTokenRequiredError(error)) {
         pendingManifest.current = manifest;

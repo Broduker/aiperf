@@ -16,6 +16,9 @@ def test_submit_page_validates_before_mutating() -> None:
     assert "api.validateManifest(manifest)" in source
     assert "if (!result.passed) return;" in source
     assert "api.createJob(manifest)" in source
+    assert "api.createSweep(manifest)" in source
+    assert "manifest.kind === 'AIPerfSweep'" in source
+    assert "buildSweepPath(created)" in source
     assert "isTokenRequiredError(error)" in source
     assert 'testid="submit-job-yaml"' in source
 

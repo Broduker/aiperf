@@ -188,6 +188,14 @@ export const api = {
     });
   },
 
+  /** Create an AIPerfSweep from a manifest. Requires the mutating-route token. */
+  createSweep(manifest) {
+    return mutatingFetch('/sweeps', {
+      method: 'POST',
+      body: JSON.stringify({ manifest }),
+    });
+  },
+
   /** List all AIPerfSweep records (live + archived) */
   listSweeps() {
     return apiFetch('/sweeps');

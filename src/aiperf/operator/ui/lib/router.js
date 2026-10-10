@@ -181,3 +181,14 @@ export function buildJobPath(job = {}) {
   const base = `/jobs/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`;
   return epoch != null ? `${base}/runs/${encodeURIComponent(String(epoch))}` : base;
 }
+
+/**
+ * Build a v1 sweep-detail path, pinning to /runs/<epoch> when available.
+ */
+export function buildSweepPath(sweep = {}) {
+  const namespace = sweep.namespace ?? 'default';
+  const name = sweep.name ?? sweep.sweep_name ?? '';
+  const epoch = sweep.sweepRunEpoch ?? sweep.sweep_run_epoch ?? sweep.epoch ?? null;
+  const base = `/sweeps/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`;
+  return epoch != null ? `${base}/runs/${encodeURIComponent(String(epoch))}` : base;
+}

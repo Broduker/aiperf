@@ -106,6 +106,7 @@ def test_manifest_validation_and_creation_use_expected_routes_and_payloads() -> 
         const manifest = {metadata: {name: 'job-1', namespace: 'bench'}};
         await api.validateManifest(manifest);
         await api.createJob(manifest);
+        await api.createSweep(manifest);
         console.log(JSON.stringify(calls));
         """
     )
@@ -119,6 +120,12 @@ def test_manifest_validation_and_creation_use_expected_routes_and_payloads() -> 
         },
         {
             "url": "/api/v1/jobs",
+            "method": "POST",
+            "body": '{"manifest":{"metadata":{"name":"job-1","namespace":"bench"}}}',
+            "auth": "Bearer token-123",
+        },
+        {
+            "url": "/api/v1/sweeps",
             "method": "POST",
             "body": '{"manifest":{"metadata":{"name":"job-1","namespace":"bench"}}}',
             "auth": "Bearer token-123",
