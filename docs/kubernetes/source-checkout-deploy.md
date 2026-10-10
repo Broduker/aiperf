@@ -52,47 +52,116 @@ uv run aiperf --help
 uv run aiperf kube --help
 ```
 
-Pick a tag that identifies the exact checkout you are deploying:
+The build script derives the image tag from the checkout version, branch, and
+commit automatically. You can preview it without building:
 
 ```bash
-export AIPERF_TAG="$(git rev-parse --short HEAD)"
+source ci/scripts/lib/common.sh
+aiperf_ci_init
+aiperf_ci_resolve_refs
+printf '%s\n' "${AIPERF_IMAGE_REF}"
 ```
 
 ## 2. Build and push the AIPerf image
 
-The same image is used by the operator containers and benchmark JobSet pods unless you explicitly override `defaults.image` in the Helm chart.
+The repository provides a Harbor-oriented BuildKit entrypoint. It uses the same image for the operator containers and benchmark JobSet pods unless you explicitly override `defaults.image` in the Helm chart.
 
-### NGC-style registry
+The generated image tag is deterministic:
 
-Use this shape for an NGC organization or private NVIDIA registry namespace:
-
-```bash
-export AIPERF_IMAGE="nvcr.io/<org>/aiperf:${AIPERF_TAG}"
-
-docker build -t "${AIPERF_IMAGE}" .
-docker push "${AIPERF_IMAGE}"
+```text
+{version}-{prefix}-{commit sha first 4 characters}
 ```
 
-### GitHub Container Registry
+For example, version `v0.13.0` on branch `develop` at commit `1ec5f974...` becomes:
 
-Use this shape for GHCR:
-
-```bash
-export AIPERF_IMAGE="ghcr.io/<org>/aiperf:${AIPERF_TAG}"
-
-docker build -t "${AIPERF_IMAGE}" .
-docker push "${AIPERF_IMAGE}"
+```text
+v0.13.0-dev-1ec5
 ```
 
-If your cluster nodes use a different architecture than the build host, build for the cluster platform:
+The default prefix is the branch name, with `develop` normalized to `dev`. Override it with `IMAGE_TAG_PREFIX`.
+
+Run the scripts using Bash (including when previewing a tag). Log in to Harbor
+and build the complete runtime image:
 
 ```bash
-docker buildx build \
-  --platform linux/amd64 \
-  -t "${AIPERF_IMAGE}" \
-  --push \
-  .
+docker login harbor.weizhipin.com
+PUSH_IMAGE=1 make docker-ci
 ```
+
+The script defaults to these internal sources:
+
+- Base Python image: `harbor.weizhipin.com/arsenal-ai/python:3.12-slim`
+- uv image: `harbor.weizhipin.com/arsenal-ai/uv:latest`
+- Python packages: Tsinghua PyPI mirror
+- CPU PyTorch wheels: SJTU mirror
+- Debian packages: Aliyun Debian mirror
+- BuildKit image: `harbor.weizhipin.com/arsenal-ai/moby/buildkit:buildx-stable-1`
+- Image repository: `harbor.weizhipin.com/arsenal-ai/aiperf`
+
+Runtime requirements are exported from `uv.lock` with their exact pins and
+hashes, then installed from these mirrors without re-resolving the lockfile.
+Changing `UV_DEFAULT_INDEX` alongside `uv sync --locked` would invalidate the
+lock's original index identity. `PYPI_INDEX_URL` and `PYTORCH_INDEX_URL` override
+the two trusted indexes; installation checks lockfile hashes even when
+searching both indexes.
+
+FFmpeg source archives still default to `https://ffmpeg.org/releases`, because
+the tested domestic paths did not serve valid archives. Override
+`FFMPEG_SOURCE_URL` with a reachable release-directory mirror if available.
+
+Useful overrides:
+
+```bash
+# Build without pushing the image; still use the registry cache when available.
+make docker-ci
+
+# Build the shorter operator/CI image without compiling ffmpeg.
+ENABLE_FFMPEG=0 make docker-ci
+
+# Use a custom branch prefix.
+IMAGE_TAG_PREFIX=feature-dashboard PUSH_IMAGE=1 make docker-ci
+
+# Force a clean build.
+NO_CACHE=1 PUSH_IMAGE=1 make docker-ci
+```
+
+The build uses BuildKit registry cache at:
+
+```text
+harbor.weizhipin.com/arsenal-ai/aiperf-build-cache
+```
+
+It also uses cache mounts for the uv package cache and ffmpeg C/C++ compilation
+cache. These cache mounts persist on the same BuildKit builder, but are not
+exported as registry layer cache. Use a persistent builder (for example, on a
+self-hosted runner) to retain them between CI runs. `PUSH_IMAGE=1` publishes both
+the image and the branch/platform layer cache. Set `PUSH_CACHE=0` to disable
+cache export independently. `NO_CACHE=1` ignores layer cache, but does not erase
+the builder's uv/ccache mounts and still permits exporting newly built layers.
+
+Reuse a builder with `BUILDX_BUILDER`; its existing BuildKit configuration is
+preserved. `BUILDKIT_IMAGE` controls newly created builders. The script selects
+the builder without changing Docker's global current-builder setting.
+
+For a cluster with a different architecture, set the target platform explicitly:
+
+```bash
+BUILD_PLATFORM=linux/amd64 PUSH_IMAGE=1 make docker-ci
+```
+
+The implementation is in `ci/scripts/build-image.sh`, with tag and BuildKit
+helpers under `ci/scripts/lib/`. GitHub Actions uses the same script in
+`.github/workflows/build-image.yml` and is manually triggered. Configure the
+`HARBOR_USERNAME` and `HARBOR_PASSWORD` repository secrets, and ensure the runner
+can reach Harbor. Set the `AIPERF_BUILD_RUNNER` repository variable to an internal
+self-hosted runner label if hosted runners cannot reach it. The default runner
+is `ubuntu-latest`.
+
+For a source copy without `.git`, pass `AIPERF_BRANCH` and the original
+`AIPERF_SHA`; CI automatically uses `GITHUB_SHA` when provided. Builds from an
+uncommitted working tree still use HEAD's tag, so commit before publishing an
+image intended to identify an exact source revision. A short four-character
+SHA may collide, so the tag is a naming convention, not a cryptographic identity.
 
 ## 3. Create an image pull secret if the registry is private
 
@@ -104,14 +173,14 @@ Create the operator namespace first:
 kubectl create namespace aiperf-system --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-For NGC-style registries:
+For Harbor:
 
 ```bash
 kubectl create secret docker-registry aiperf-registry \
   --namespace aiperf-system \
-  --docker-server=nvcr.io \
-  --docker-username='$oauthtoken' \
-  --docker-password="${NGC_API_KEY}"
+  --docker-server=harbor.weizhipin.com \
+  --docker-username="${HARBOR_USERNAME}" \
+  --docker-password="${HARBOR_PASSWORD}"
 ```
 
 For GHCR:
@@ -138,9 +207,14 @@ kubectl create secret docker-registry aiperf-registry \
 
 ## 4. Install or upgrade the AIPerf operator
 
-Split the image into repository and tag for Helm:
+Resolve the built image reference and split it into repository and tag for Helm
+(run this block in Bash):
 
 ```bash
+source ci/scripts/lib/common.sh
+aiperf_ci_init
+aiperf_ci_resolve_refs
+export AIPERF_IMAGE="${AIPERF_IMAGE_REF}"
 export AIPERF_IMAGE_REPOSITORY="${AIPERF_IMAGE%:*}"
 export AIPERF_IMAGE_TAG="${AIPERF_IMAGE##*:}"
 ```
@@ -315,11 +389,11 @@ Then open `http://localhost:8081`.
 After changing source code, repeat the build and push with a new immutable tag:
 
 ```bash
-export AIPERF_TAG="$(git rev-parse --short HEAD)-$(date +%Y%m%d%H%M%S)"
-export AIPERF_IMAGE="nvcr.io/<org>/aiperf:${AIPERF_TAG}"
-
-docker build -t "${AIPERF_IMAGE}" .
-docker push "${AIPERF_IMAGE}"
+PUSH_IMAGE=1 make docker-ci
+source ci/scripts/lib/common.sh
+aiperf_ci_init
+aiperf_ci_resolve_refs
+export AIPERF_IMAGE="${AIPERF_IMAGE_REF}"
 
 export AIPERF_IMAGE_REPOSITORY="${AIPERF_IMAGE%:*}"
 export AIPERF_IMAGE_TAG="${AIPERF_IMAGE##*:}"

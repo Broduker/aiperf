@@ -68,7 +68,8 @@ pre-commit install    # Install pre-commit hooks
 | `make helm-lint` | Lint the bundled AIPerf operator Helm chart |
 | `make helm-template` | Render the bundled Helm chart without cluster access |
 | `make helm-package` | Package the bundled Helm chart into `dist/` (override with `HELM_DIST_DIR`) |
-| `make docker` | Build Docker image |
+| `make docker` | Build Harbor image with the version/branch/commit tag |
+| `make docker-ci` | Build with BuildKit layer, uv, and compiler caches; set `PUSH_IMAGE=1` to publish |
 | `make docker-run` | Run Docker container |
 | `make clean` | Clean caches and build artifacts |
 | `make version` | Print project version |

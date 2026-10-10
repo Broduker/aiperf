@@ -1,21 +1,37 @@
 # check=skip=UndefinedVar
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-FROM python:3.13-slim-bookworm@sha256:386df64585134ba00b1d5e307acb1e72f33e9e87dbbb00aad9b8f24dbb51db72 AS base
+ARG PYTHON_IMAGE=harbor.weizhipin.com/arsenal-ai/python:3.12-slim
+ARG UV_IMAGE=harbor.weizhipin.com/arsenal-ai/uv:latest
+ARG PYTHON_VERSION=3.12
+ARG PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PYTORCH_INDEX_URL=https://mirrors.sjtug.sjtu.edu.cn/pytorch-wheels/cpu
+ARG DEBIAN_MIRROR=mirrors.aliyun.com
+
+FROM ${UV_IMAGE} AS uv
+
+FROM ${PYTHON_IMAGE} AS base
+
+ARG PYTHON_VERSION
+ARG PYPI_INDEX_URL
 
 ENV USERNAME=appuser
 ENV APP_NAME=aiperf
+ENV UV_DEFAULT_INDEX=${PYPI_INDEX_URL} \
+    UV_CACHE_DIR=/root/.cache/uv \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
 
 # Create app user
-RUN groupadd -r $USERNAME \
-    && useradd -r -g $USERNAME $USERNAME
+RUN groupadd --gid 1000 $USERNAME \
+    && useradd --uid 1000 --gid 1000 --create-home $USERNAME
 
 # Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=uv /uv /uvx /bin/
 
 # Create virtual environment
 RUN mkdir /opt/$APP_NAME \
-    && uv venv /opt/$APP_NAME/venv --python 3.13 \
+    && uv venv /opt/$APP_NAME/venv --python $PYTHON_VERSION \
     && chown -R $USERNAME:$USERNAME /opt/$APP_NAME
 
 # Activate virtual environment
@@ -74,7 +90,8 @@ WORKDIR /workspace
 COPY pyproject.toml README.md LICENSE ATTRIBUTIONS.md ./src/ /workspace/
 
 # Build the wheel
-RUN uv build --wheel --out-dir /dist
+RUN --mount=type=cache,id=aiperf-uv-cache,target=/root/.cache/uv,sharing=locked \
+    uv build --wheel --out-dir /dist
 
 # Export-only stage: scratch-based so `docker buildx build --target
 # wheel-artifact --output type=local,dest=<dir>` writes only the wheel file
@@ -89,13 +106,24 @@ FROM base AS env-builder
 
 WORKDIR /workspace
 
+ARG DEBIAN_MIRROR
+ARG PYTORCH_INDEX_URL
+
+ENV CCACHE_DIR=/root/.cache/ccache
+
 # Install build dependencies. The dpkg-installed.txt snapshot was dropped:
 # nothing downstream consumes it, and shipping it alongside runtime-pkgs.txt
 # in the artifact was misleading (build-only packages that never ship).
-RUN mkdir -p /opt/licenses/dpkg \
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g; s|security.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    elif [ -f /etc/apt/sources.list ]; then \
+        sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g; s|security.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list; \
+    fi \
+    && mkdir -p /opt/licenses/dpkg \
     && apt-get update -y \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         build-essential \
+        ccache \
         libogg-dev \
         libopus-dev \
         libvorbis-dev \
@@ -127,15 +155,19 @@ RUN mkdir -p /opt/licenses/dpkg \
 # --enable-ffmpeg adds 18 filters. Verify with `ffmpeg -encoders`, not `-codecs`.
 ARG FFMPEG_VERSION=8.1.2
 ARG ENABLE_FFMPEG=1
-RUN if [ "${ENABLE_FFMPEG}" != "1" ]; then \
+ARG FFMPEG_SOURCE_URL=https://ffmpeg.org/releases
+RUN --mount=type=cache,id=aiperf-ffmpeg-ccache,target=/root/.cache/ccache,sharing=locked \
+    if [ "${ENABLE_FFMPEG}" != "1" ]; then \
         echo "ENABLE_FFMPEG=${ENABLE_FFMPEG}: skipping ffmpeg build"; \
         mkdir -p /opt/ffmpeg/bin /opt/ffmpeg/lib /opt/licenses/ffmpeg; \
         exit 0; \
     fi; \
-    wget https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz \
+    wget "${FFMPEG_SOURCE_URL}/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
     && tar -xf ffmpeg-${FFMPEG_VERSION}.tar.xz \
     && cd ffmpeg-${FFMPEG_VERSION} \
     && ./configure \
+        --cc="ccache gcc" \
+        --cxx="ccache g++" \
         --prefix=/opt/ffmpeg \
         --disable-gpl \
         --disable-nonfree \
@@ -206,17 +238,21 @@ RUN { dpkg -S /bin/bash 2>/dev/null; \
 ENV PATH="/opt/ffmpeg/bin${PATH:+:${PATH}}"
 ENV LD_LIBRARY_PATH="/opt/ffmpeg/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-# Create directories for the nvs user (UID 1000 in NVIDIA distroless)
+# Create directories for the runtime user.
 RUN mkdir -p /app /app/artifacts /app/.cache \
     && chown -R 1000:1000 /app \
     && chmod -R 755 /app
 
-# Install the lock-resolved runtime dependencies using uv. --no-default-groups
-# excludes the PEP 735 dev group (hypothesis, pre-commit) so dev-only tooling
-# does not leak into the runtime image; the test/dev extras are not installed
-# here either.
+# Export pins and hashes without re-resolving the lockfile against a new index.
+# The two trusted mirrors may overlap; hashes still restrict every artifact
+# to the contents approved by uv.lock.
 COPY pyproject.toml uv.lock .
-RUN uv sync --active --locked --no-install-project --no-default-groups --extra botorch --extra aws
+RUN --mount=type=cache,id=aiperf-uv-cache,target=/root/.cache/uv,sharing=locked \
+    uv export --frozen --no-default-groups --extra botorch --extra aws \
+        --no-emit-project --output-file /tmp/runtime-requirements.txt \
+    && uv pip install --require-hashes --no-deps \
+        --index "${PYTORCH_INDEX_URL}" --index-strategy unsafe-best-match \
+        --requirements /tmp/runtime-requirements.txt
 
 # Copy the rest of the application.
 #
@@ -234,7 +270,8 @@ RUN uv sync --active --locked --no-install-project --no-default-groups --extra b
 # request to a SigV4-protected endpoint fails, which is the documented EKS/IRSA
 # workflow in docs/tutorials/aws-sigv4-auth.md.
 COPY --from=wheel-builder /dist /dist
-RUN WHEEL=$(ls /dist/aiperf-*.whl) \
+RUN --mount=type=cache,id=aiperf-uv-cache,target=/root/.cache/uv,sharing=locked \
+    WHEEL=$(ls /dist/aiperf-*.whl) \
     && uv pip install --no-deps "aiperf[botorch,aws] @ file://${WHEEL}" \
     && rm -rf /dist /workspace/pyproject.toml
 
@@ -325,7 +362,10 @@ ENTRYPOINT ["/bin/bash", "-c"]
 ############################################
 ############# Runtime Image ################
 ############################################
-FROM nvcr.io/nvidia/distroless/python:3.13-v4.1.4-dev AS runtime
+FROM ${PYTHON_IMAGE} AS runtime
+
+RUN groupadd --gid 1000 aiperf \
+    && useradd --uid 1000 --gid 1000 --create-home aiperf
 
 # Include project license and asset attributions
 COPY LICENSE ATTRIBUTIONS.md /legal/
@@ -342,7 +382,7 @@ COPY --from=env-builder --chown=1000:1000 /opt/ffmpeg /opt/ffmpeg
 ENV PATH="/opt/ffmpeg/bin${PATH:+:${PATH}}"
 ENV LD_LIBRARY_PATH="/opt/ffmpeg/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-# Setup the directories with permissions for nvs user
+# Setup the directories with permissions for the runtime user
 COPY --from=env-builder --chown=1000:1000 /app /app
 WORKDIR /app
 ENV HOME=/app
@@ -356,6 +396,8 @@ COPY --from=env-builder --chown=1000:1000 /opt/tiktoken_cache /opt/tiktoken_cach
 ENV VIRTUAL_ENV=/opt/aiperf/venv \
     PATH="/opt/aiperf/venv/bin:${PATH}" \
     TIKTOKEN_CACHE_DIR=/opt/tiktoken_cache
+
+USER 1000:1000
 
 # Set bash as entrypoint
 ENTRYPOINT ["/bin/bash", "-c"]

@@ -36,7 +36,7 @@
 		check-ergonomics regenerate-ergonomics-baseline \
 		check-ruff-baselined regenerate-ruff-baseline \
 		check-agent-files-sync \
-		check-vendor-ui-deps update-vendor-ui-deps
+		check-vendor-ui-deps update-vendor-ui-deps docker-ci
 
 
 # Include user-defined environment variables
@@ -63,10 +63,9 @@ APP_VERSION := $(shell grep '^version = ' pyproject.toml 2>/dev/null | sed 's/ve
 # The folder where uv is installed
 UV_PATH ?= $(HOME)/.local/bin
 
-# The name of the docker image (defaults to the app name)
-DOCKER_IMAGE_NAME ?= $(APP_NAME)
-# The tag of the docker image (defaults to the app version)
-DOCKER_IMAGE_TAG ?= $(APP_VERSION)
+# Default to the same repository and source-derived tag as the CI script.
+DOCKER_IMAGE_NAME ?= $(if $(AIPERF_IMAGE),$(AIPERF_IMAGE),harbor.weizhipin.com/arsenal-ai/aiperf)
+DOCKER_IMAGE_TAG ?= $(shell source ci/scripts/lib/common.sh; aiperf_ci_init; aiperf_ci_resolve_tag)
 
 # The extra arguments the user passed to make
 args = $(filter-out $@,$(MAKECMDGOALS))
@@ -172,6 +171,9 @@ precompile: #? precompile source bytecode so parallel test subprocesses never ra
 
 docker: #? build the docker image.
 	docker build -t $(DOCKER_IMAGE_NAME):$(DOCKER_IMAGE_TAG) $(args) .
+
+docker-ci: #? build the Harbor image with the CI tag and registry cache.
+	./ci/scripts/build-image.sh
 
 docker-run: #? run the docker container.
 	docker run -it --rm $(DOCKER_IMAGE_NAME):$(DOCKER_IMAGE_TAG) $(args)
