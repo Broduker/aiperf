@@ -25,3 +25,11 @@ def test_submit_page_does_not_offer_secret_input() -> None:
 
     assert "api_key" not in source.lower()
     assert "Do not put API keys" in source
+
+
+def test_submit_page_escapes_inline_code_in_template_literal() -> None:
+    source = SUBMIT_PATH.read_text()
+
+    assert "<code>AIPerfJob</code>" in source
+    assert "<code>kubectl apply</code>" in source
+    assert "same `AIPerfJob` shape" not in source

@@ -170,7 +170,7 @@ export function SubmitJob() {
             <div class="submit-job-panel-heading">
               <div>
                 <h2>Job manifest</h2>
-                <p class="text-dim">The same `AIPerfJob` shape accepted by `kubectl apply`.</p>
+                <p class="text-dim">The same <code>AIPerfJob</code> shape accepted by <code>kubectl apply</code>.</p>
               </div>
               <span class="submit-job-format">YAML</span>
             </div>
