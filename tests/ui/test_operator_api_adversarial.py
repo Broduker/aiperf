@@ -83,6 +83,49 @@ def test_path_segments_encode_slashes_dots_spaces_and_unicode() -> None:
     ]
 
 
+def test_manifest_validation_and_creation_use_expected_routes_and_payloads() -> None:
+    result = _run_api_script(
+        """
+        const calls = [];
+        globalThis.sessionStorage = {
+          getItem: () => 'token-123',
+          setItem: () => {},
+          removeItem: () => {},
+        };
+        globalThis.fetch = async (url, opts = {}) => {
+          calls.push({url, method: opts.method ?? 'GET', body: opts.body ?? null, auth: opts.headers?.Authorization ?? null});
+          return {
+            ok: true,
+            status: 201,
+            json: async () => ({namespace: 'bench', name: 'job-1'}),
+            text: async () => 'ok',
+            headers: {get: () => null},
+          };
+        };
+
+        const manifest = {metadata: {name: 'job-1', namespace: 'bench'}};
+        await api.validateManifest(manifest);
+        await api.createJob(manifest);
+        console.log(JSON.stringify(calls));
+        """
+    )
+
+    assert result == [
+        {
+            "url": "/api/v1/validate",
+            "method": "POST",
+            "body": '{"manifest":{"metadata":{"name":"job-1","namespace":"bench"}},"strict":false}',
+            "auth": None,
+        },
+        {
+            "url": "/api/v1/jobs",
+            "method": "POST",
+            "body": '{"manifest":{"metadata":{"name":"job-1","namespace":"bench"}}}',
+            "auth": "Bearer token-123",
+        },
+    ]
+
+
 def test_artifact_filenames_with_parent_components_remain_single_url_segment() -> None:
     result = _run_api_script(
         """

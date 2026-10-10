@@ -10,6 +10,7 @@ const PRIMARY_GROUP = {
     { path: '/', label: 'Dashboard' },
     { path: '/jobs', label: 'Jobs' },
     { path: '/sweeps', label: 'Sweeps' },
+    { path: '/submit', label: 'Submit' },
   ],
 };
 

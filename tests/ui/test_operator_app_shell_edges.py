@@ -55,6 +55,7 @@ def test_command_palette_search_covers_every_internal_top_nav_destination() -> N
         "/",
         "/jobs",
         "/sweeps",
+        "/submit",
         "/leaderboard",
         "/compare",
         "/history",
@@ -64,3 +65,9 @@ def test_command_palette_search_covers_every_internal_top_nav_destination() -> N
             assert f"path: '{path}'" in command_palette_source
 
     assert "/dashboard/" not in command_palette_source
+
+
+def test_submit_route_has_a_human_breadcrumb_label() -> None:
+    breadcrumb_source = _source(BREADCRUMB_PATH)
+
+    assert "'/submit': 'Submit benchmark'" in breadcrumb_source

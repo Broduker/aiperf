@@ -5574,6 +5574,128 @@ button[type="submit"]:hover {
   line-height: inherit;
 }
 
+.submit-job-page {
+  max-width: 1480px;
+  margin: 0 auto;
+}
+
+.submit-job-page .page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.submit-job-page h1,
+.submit-job-page h2,
+.submit-job-page h3 {
+  margin: 0;
+}
+
+.submit-job-page h1 { font-size: var(--font-size-xl); }
+.submit-job-page h2 { font-size: var(--font-size-base); }
+.submit-job-page h3 { font-size: var(--font-size-sm); }
+
+.submit-job-page .eyebrow {
+  color: var(--accent);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  margin-bottom: var(--space-1);
+}
+
+.submit-job-page .page-heading p,
+.submit-job-panel-heading p {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-sm);
+}
+
+.submit-job-notice {
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  color: var(--sub);
+  background: color-mix(in srgb, var(--cyan) 8%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--cyan) 25%, var(--border));
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+
+.submit-job-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.submit-job-editor-panel,
+.submit-job-side-panel {
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.submit-job-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.submit-job-format {
+  padding: 3px 7px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.submit-job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.submit-job-actions .btn { flex: 1 1 130px; justify-content: center; }
+.submit-job-actions .btn:disabled { cursor: wait; opacity: 0.55; }
+
+.submit-job-result {
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--sub);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.submit-job-result--success {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, var(--border));
+}
+
+.submit-job-result--error {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, var(--border));
+}
+
+.submit-job-result ul,
+.submit-job-help ul { margin: var(--space-2) 0 0; padding-left: 1.2rem; }
+.submit-job-warnings { margin-top: var(--space-3); color: var(--yellow); }
+.submit-job-help { color: var(--sub); font-size: var(--font-size-sm); line-height: 1.5; }
+.submit-job-help p { margin: var(--space-3) 0 0; }
+
+@media (max-width: 900px) {
+  .submit-job-layout { grid-template-columns: 1fr; }
+  .submit-job-side-panel { order: -1; }
+}
+
 .yl-key     { color: var(--cat-throughput); }
 .yl-string  { color: var(--accent); }
 .yl-num     { color: var(--cat-latency); }

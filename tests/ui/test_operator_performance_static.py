@@ -26,6 +26,8 @@ _ALLOWED_JSON_STRINGIFY_CALLS = {
     ("components/job-table.js", 72),
     ("components/server-metrics/helpers.js", 173),
     ("lib/api.js", 112),
+    ("lib/api.js", 179),
+    ("lib/api.js", 187),
     ("lib/job-ws.js", 127),
 }
 

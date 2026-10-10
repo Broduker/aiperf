@@ -85,8 +85,8 @@ itself — whoever can reach port 8081 inside the cluster (or through a forward)
 can view every job and every result. Do not expose this port via an
 unauthenticated Ingress.
 
-Mutating actions (cancel a run) *are* reachable from the browser, but only
-through the operator's bearer token. `lib/api.js` routes them
+Mutating actions (submit or cancel a run) *are* reachable from the browser, but
+only through the operator's bearer token. `lib/api.js` routes them
 through `mutatingFetch`, which requires a token in `sessionStorage`; the first
 attempt without one raises a `TOKEN_REQUIRED` error, the page opens
 `components/token-modal.js` to collect it, and the action retries. A `401`
@@ -118,6 +118,7 @@ configuration. The full route table (`src/aiperf/operator/ui/app.js:52-86`):
 | `/sweeps` | `Sweeps` | Filterable/sortable table of every AIPerfSweep. |
 | `/sweeps/:ns/:name` | `SweepDetail` | Sweep workbench (variation curves, Pareto, children). |
 | `/sweeps/:ns/:name/runs/:epoch` | `SweepDetail` | Sweep workbench pinned to one sweep epoch. |
+| `/submit` | `SubmitJob` | YAML editor with manifest validation and protected AIPerfJob submission. |
 | `/leaderboard` | `Leaderboard` | Cross-run ranking for a chosen metric. |
 | `/compare` | `Compare` | Multi-run comparison (metric table, bar/Pareto charts). |
 | `/compare/:ns/:name/:epochA/:epochB` | `CompareEpochs` | Two-epoch diff of one run. |
@@ -128,6 +129,7 @@ Any other path renders a "Not Found" stub.
 ```mermaid
 flowchart TB
     dash["/"] --> Dashboard
+    submit["/submit"] --> SubmitJob
     jobs["/jobs"] --> JobDetail["/jobs/:ns/:name(/runs/:epoch)"]
     sweeps["/sweeps"] --> SweepDetail["/sweeps/:ns/:name(/runs/:epoch)"]
     lb["/leaderboard"]
@@ -141,7 +143,7 @@ flowchart TB
 `AIPerf Operator` logo and two labelled tab groups on the left, the search
 trigger on the right.
 
-- **OPERATE:** Dashboard, Jobs, Sweeps.
+- **OPERATE:** Dashboard, Jobs, Sweeps, Submit.
 - **ANALYZE:** Leaderboard, Compare, History.
 
 When `/api/v1/config/features` reports `dashboard_enabled: true`, a third
@@ -198,6 +200,26 @@ The cluster-wide landing view (`pages/dashboard.js`).
 `GET /api/v1/analytics/scatter` (30s). The scatter poll is a single query that
 replaced the old leaderboard-plus-per-entry-summary fan-out, and it feeds both
 the scatter chart and the KPI tiles.
+
+### Submit benchmark (`/submit`)
+
+The Submit page accepts the same complete `AIPerfJob` YAML manifest used by
+`kubectl apply`. It parses the YAML locally, then calls
+`POST /api/v1/validate` before allowing submission. Validation errors block the
+submit action; warnings are shown but do not block it.
+
+After validation, the page calls the protected `POST /api/v1/jobs` endpoint.
+When no token is present in the tab, the standard token modal requests
+`AIPERF_OPERATOR_MUTATING_ROUTES_TOKEN`, stores it only in `sessionStorage`, and
+retries the request. On success the page navigates to the new job's detail
+route. The target namespace is taken from `metadata.namespace`; when omitted,
+the API applies its existing `default` namespace behavior.
+
+The editor intentionally accepts a full manifest rather than exposing every
+benchmark and pod option as a separate form control. This keeps the web path
+aligned with the CRD schema and preserves access to advanced fields. Do not
+place endpoint API keys in the YAML; use the operator's existing Secret-backed
+credential injection configuration instead.
 
 ### Jobs (`/jobs`)
 

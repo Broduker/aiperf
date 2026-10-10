@@ -172,6 +172,22 @@ export const api = {
     return apiFetch('/jobs');
   },
 
+  /** Validate an AIPerfJob or AIPerfSweep manifest without mutating the cluster. */
+  validateManifest(manifest, strict = false) {
+    return apiFetch('/validate', {
+      method: 'POST',
+      body: JSON.stringify({ manifest, strict }),
+    });
+  },
+
+  /** Create an AIPerfJob from a manifest. Requires the mutating-route token. */
+  createJob(manifest) {
+    return mutatingFetch('/jobs', {
+      method: 'POST',
+      body: JSON.stringify({ manifest }),
+    });
+  },
+
   /** List all AIPerfSweep records (live + archived) */
   listSweeps() {
     return apiFetch('/sweeps');
