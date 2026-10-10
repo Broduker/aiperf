@@ -105,6 +105,13 @@ operator:
     # resultsCompressOnDisk stores downloaded result files as zstd on the PVC
     resultsCompressOnDisk: "true"
 
+  # operator.mutatingRoutes enables authenticated dashboard routes that create,
+  # validate, or delete benchmark resources.
+  mutatingRoutes:
+    enabled: false
+    tokenSecretName: aiperf-mutating-routes
+    tokenSecretKey: token
+
   # operator.metrics configures the Prometheus /metrics endpoint exposed by
   # the kopf operator process (separate from the FastAPI results-server
   # sidecar). Set port to 0 to disable.

@@ -74,6 +74,15 @@
                         "resultsCompressOnDisk": {"type": "string"}
                     }
                 },
+                "mutatingRoutes": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "enabled": {"type": "boolean"},
+                        "tokenSecretName": {"type": "string", "minLength": 1},
+                        "tokenSecretKey": {"type": "string", "minLength": 1}
+                    }
+                },
                 "watchNamespaces": {"type": "array", "items": {"type": "string"}},
                 "tmpSizeLimit": {"type": "string"},
                 "metrics": {

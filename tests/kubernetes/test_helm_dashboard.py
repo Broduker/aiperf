@@ -103,3 +103,18 @@ def test_dashboard_pvc_mount_is_readonly() -> None:
     dash = _container(deploy, "dashboard")
     results_mount = next(m for m in dash["volumeMounts"] if m["name"] == "results")
     assert results_mount.get("readOnly") is True
+
+
+def test_mutating_routes_use_configured_secret_and_watch_all_namespaces() -> None:
+    docs = _render("operator.mutatingRoutes.enabled=true")
+    deploy = _operator_deployment(docs)
+    operator = _container(deploy, "operator")
+    env = {entry["name"]: entry for entry in operator["env"]}
+    assert env["AIPERF_OPERATOR_MUTATING_ROUTES_ENABLED"]["value"] == "true"
+    assert env["AIPERF_OPERATOR_MUTATING_ROUTES_TOKEN"]["valueFrom"] == {
+        "secretKeyRef": {
+            "name": "aiperf-mutating-routes",
+            "key": "token",
+        }
+    }
+    assert "--all-namespaces" in operator["command"]

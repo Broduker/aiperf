@@ -95,6 +95,15 @@ spec:
           value: {{ .Values.operator.env.endpointCheckTimeout | quote }}
         - name: AIPERF_RESULTS_COMPRESS_ON_DISK
           value: {{ .Values.operator.env.resultsCompressOnDisk | default "true" | quote }}
+        {{- if .Values.operator.mutatingRoutes.enabled }}
+        - name: AIPERF_OPERATOR_MUTATING_ROUTES_ENABLED
+          value: "true"
+        - name: AIPERF_OPERATOR_MUTATING_ROUTES_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.operator.mutatingRoutes.tokenSecretName | quote }}
+              key: {{ .Values.operator.mutatingRoutes.tokenSecretKey | quote }}
+        {{- end }}
         - name: AIPERF_K8S_SHARE_PROCESS_NAMESPACE
           value: {{ .Values.podTemplate.shareProcessNamespace | default false | quote }}
         - name: AIPERF_DASHBOARD_PORT
