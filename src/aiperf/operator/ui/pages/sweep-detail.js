@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { html } from 'htm/preact';
-import { useState, useEffect, useMemo } from 'preact/hooks';
-import { api, poll } from '../lib/api.js';
-import { palette, phaseColor } from '../lib/theme.js';
+import { useState, useEffect, useMemo, useRef } from 'preact/hooks';
+import { api, isTokenRequiredError, poll, setSessionToken } from '../lib/api.js';
+import { colors, palette, phaseColor } from '../lib/theme.js';
 import { sweeps as sweepsSignal, freshness, clearFreshnessSource } from '../lib/state.js';
 import { FreshnessPill, StaleBanner } from '../components/freshness.js';
 import { KpiCard } from '../components/kpi-card.js';
@@ -24,6 +24,7 @@ import { EpochSelector } from '../components/epoch-selector.js';
 import { NsPill, ModelPill } from '../components/pills.js';
 import { RelativeTime } from '../components/time.js';
 import { LoadingPanel } from '../components/spinner.js';
+import { TokenModal } from '../components/token-modal.js';
 import { fmtBytes, fmtMilliseconds, fmtNumber, fmtReqPerSecond } from '../lib/format.js';
 import { buildJobPath, navigate, query, setQuery } from '../lib/router.js';
 import { buildSweepVariations, isVariationFeasible, pickObjectiveWinner, pickSweepWinner, resolveSweepManifest, shouldShowSweepDiagnostics, sweepPhaseMode } from './sweep-detail-helpers.js';
@@ -146,6 +147,10 @@ export function SweepDetail({ namespace, name, epoch }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlAxis]);
   const [error, setError] = useState(null);
+  const [deleteState, setDeleteState] = useState('idle');
+  const [deleteError, setDeleteError] = useState(null);
+  const [showDeleteTokenModal, setShowDeleteTokenModal] = useState(false);
+  const pendingDeleteRef = useRef(null);
   // Mirrors job-detail's ``liveStale``: flips true when a poll throws
   // after the first successful detail load. Lets the header indicator
   // downgrade Live → Stale without nuking the rest of the page on a
@@ -456,6 +461,37 @@ export function SweepDetail({ namespace, name, epoch }) {
     }
   }
 
+  async function handleDelete() {
+    setDeleteError(null);
+    setDeleteState('pending');
+    try {
+      await api.deleteSweep(namespace, name);
+      navigate('/sweeps');
+    } catch (e) {
+      if (isTokenRequiredError(e)) {
+        setDeleteState('idle');
+        pendingDeleteRef.current = () => handleDelete();
+        setShowDeleteTokenModal(true);
+        return;
+      }
+      setDeleteError(e?.message ?? String(e));
+      setDeleteState('idle');
+    }
+  }
+
+  function onDeleteTokenConfirm(token) {
+    setSessionToken(token);
+    setShowDeleteTokenModal(false);
+    const retry = pendingDeleteRef.current;
+    pendingDeleteRef.current = null;
+    if (retry) retry();
+  }
+
+  function onDeleteTokenCancel() {
+    pendingDeleteRef.current = null;
+    setShowDeleteTokenModal(false);
+  }
+
   const childRows = useMemo(() => {
     const live = detail?.children ?? [];
     if (epoch !== undefined && live.length === 0 && archivedChildren) {
@@ -500,6 +536,7 @@ export function SweepDetail({ namespace, name, epoch }) {
   const isFailed = phaseLower === 'failed';
   const isPartiallyFailed = phaseLower === 'partiallyfailed';
   const isCancelled = phaseLower === 'cancelled';
+  const canDelete = s.source !== 'archived';
   // Show legacy /cells panel only when the new manifest path has nothing
   // to render — avoids a confusing "No cells completed yet." card sitting
   // next to a populated VariationsTable.
@@ -608,6 +645,53 @@ export function SweepDetail({ namespace, name, epoch }) {
               <p class="text-dim" style="margin:var(--space-1) 0 0 0;font-size:var(--font-size-sm)" data-testid="sweep-detail-current-cell">
                 ${liveCaption}
               </p>
+            `}
+            ${canDelete && html`
+              <div class="sweep-detail-header-actions" style="display:flex;align-items:center;gap:var(--space-2);margin-top:var(--space-3);flex-wrap:wrap">
+                ${deleteState === 'idle' && html`
+                  <button type="button"
+                    class="btn btn--danger"
+                    onclick=${() => { setDeleteError(null); setDeleteState('confirm'); }}
+                    style=${'background: transparent; color: ' + colors.error + '; border: 1px solid ' + colors.error + '66; padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); cursor: pointer; font-size: var(--font-size-sm)'}
+                    data-testid="sweep-detail-delete"
+                    title="Delete the AIPerfSweep and its Kubernetes resources. Archived results already copied to the results PVC are retained."
+                  >
+                    Delete task
+                  </button>
+                `}
+                ${deleteState === 'confirm' && html`
+                  <div style=${'display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: ' + colors.error + '11; border: 1px solid ' + colors.error + '44; border-radius: var(--radius-md)'}>
+                    <span style=${'font-size: var(--font-size-sm); color: ' + colors.error}>
+                      Delete <strong>${name}</strong>? Child jobs and Kubernetes resources are removed; archived results are retained.
+                    </span>
+                    <button type="button"
+                      onclick=${handleDelete}
+                      style=${'background: ' + colors.error + '; color: white; border: none; padding: var(--space-1) var(--space-3); border-radius: var(--radius-sm); cursor: pointer; font-size: var(--font-size-sm)'}
+                      data-testid="sweep-detail-delete-confirm"
+                    >
+                      Yes, delete
+                    </button>
+                    <button type="button"
+                      onclick=${() => { setDeleteState('idle'); setDeleteError(null); }}
+                      style=${'background: transparent; color: ' + palette.subtext0 + '; border: 1px solid ' + palette.overlay0 + '44; padding: var(--space-1) var(--space-3); border-radius: var(--radius-sm); cursor: pointer; font-size: var(--font-size-sm)'}
+                    >
+                      Keep task
+                    </button>
+                  </div>
+                `}
+                ${deleteState === 'pending' && html`
+                  <button type="button"
+                    disabled
+                    style=${'background: ' + colors.error + '22; color: ' + colors.error + '; border: 1px solid ' + colors.error + '44; padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); cursor: not-allowed; font-size: var(--font-size-sm); opacity: 0.7'}
+                    data-testid="sweep-detail-delete"
+                  >
+                    Deleting…
+                  </button>
+                `}
+                ${deleteError && html`
+                  <span style=${'font-size: var(--font-size-xs); color: ' + colors.error}>Delete failed: ${deleteError}</span>
+                `}
+              </div>
             `}
           </div>
         </div>
@@ -972,6 +1056,7 @@ export function SweepDetail({ namespace, name, epoch }) {
             podCrashCount=${(pods || []).filter(p => /crashloop/i.test(p.reason || '')).length} />
         </div>
       `}
+      ${showDeleteTokenModal && html`<${TokenModal} onConfirm=${onDeleteTokenConfirm} onCancel=${onDeleteTokenCancel} />`}
     </div>
   `;
 }

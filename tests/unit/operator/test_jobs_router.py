@@ -345,6 +345,46 @@ class TestCancel:
         assert "archived" in resp.text.lower()
 
 
+class TestDelete:
+    @pytest.mark.asyncio
+    async def test_delete_job_uses_live_resource_identity(self):
+        """A Dashboard delete is fenced to the live CR that was resolved."""
+        mock_api = MagicMock()
+        cr = _aiperf_job_cr()
+        cr["metadata"].update(uid="uid-test-bench", resourceVersion="17")
+        mock_custom = MagicMock()
+        mock_custom.get_namespaced_custom_object = AsyncMock(return_value=cr)
+        app = _make_app(mock_api)
+        delete_resource = AsyncMock()
+
+        with (
+            patch(
+                "aiperf.kubernetes.client.client.CustomObjectsApi",
+                return_value=mock_custom,
+            ),
+            patch(
+                "aiperf.operator.routers.jobs.delete_live_custom_resource",
+                delete_resource,
+            ),
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.delete("/api/v1/jobs/aiperf-benchmarks/test-bench")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted": True}
+        delete_resource.assert_awaited_once_with(
+            mock_api,
+            group="aiperf.nvidia.com",
+            version="v1alpha1",
+            plural="aiperfjobs",
+            kind="AIPerfJob",
+            namespace="aiperf-benchmarks",
+            name="test-bench",
+        )
+
+
 def test_get_job_archived_synthesizes_status(tmp_path: Path, monkeypatch):
     """GET /api/v1/jobs/{ns}/{name} for an archived job returns a full synthesized status."""
     from fastapi import FastAPI

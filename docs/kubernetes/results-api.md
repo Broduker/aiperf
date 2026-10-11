@@ -65,6 +65,8 @@ The sidecar reads result files from the shared PVC and queries the Kubernetes AP
 | POST | `/api/v1/jobs` | jobs | Create an AIPerfJob CR, `201` on success (mutating route; bearer token required when enabled) |
 | GET | `/api/v1/jobs/{namespace}/{name}` | jobs | Single CR + pods + raw status |
 | POST | `/api/v1/jobs/{namespace}/{name}/cancel` | jobs | Set `spec.cancel=true` (mutating route; bearer token required when enabled) |
+| DELETE | `/api/v1/jobs/{namespace}/{name}` | jobs | Delete a live AIPerfJob and its owned workloads (mutating route; bearer token required when enabled) |
+| DELETE | `/api/v1/sweeps/{namespace}/{name}` | sweeps | Delete a live AIPerfSweep and its child jobs (mutating route; bearer token required when enabled) |
 | WS  | `/api/v1/jobs/{namespace}/{name}/ws` | jobs-ws | Live realtime feed (proxied to controller pod) |
 | GET | `/api/v1/cluster` | jobs | Node count, GPU accounting, K8s version |
 | POST | `/api/v1/validate` | validate | Dry-run validation of an AIPerfJob / AIPerfSweep manifest |
@@ -314,6 +316,65 @@ curl -X POST \
 - `404` — neither a live CR nor a PVC directory exists for that `namespace/name`
 - `401` / `403` — RBAC denial
 - `409` — concurrent-modification conflict (retry)
+- `503` — Kubernetes client unavailable
+
+### `DELETE /api/v1/jobs/{namespace}/{name}`
+
+Delete a live AIPerfJob CR with Kubernetes foreground propagation. The operator
+and Kubernetes garbage collector remove the owned JobSet, controller pod, and
+worker pods. Results already copied to the operator PVC remain available as an
+archived run and can still be read from the results endpoints.
+
+```bash
+curl -X DELETE \
+  -H "Authorization: Bearer ${AIPERF_OPERATOR_MUTATING_ROUTES_TOKEN}" \
+  http://localhost:8081/api/v1/jobs/my-benchmarks/aiperf-bench-7f2a
+```
+
+```json
+{"deleted": true}
+```
+
+The deletion is asynchronous. A subsequent list/detail request may briefly
+show the live CR while Kubernetes processes the request; once the CR is gone,
+the entry is archived-only when PVC results exist. The delete is fenced by the
+resource UID and resource version observed by the server, so a stale request
+cannot remove a replacement CR with the same name.
+
+**Status codes**
+
+- `200` — deletion accepted by Kubernetes
+- `400` — only archived PVC results exist; there is no live CR to delete
+- `401` / `403` — mutating-route gate or RBAC denial
+- `404` — neither a live CR nor archived results exist
+- `409` — resource identity or concurrent-modification conflict
+- `503` — Kubernetes client unavailable
+
+### `DELETE /api/v1/sweeps/{namespace}/{name}`
+
+Delete a live AIPerfSweep CR with Kubernetes foreground propagation. The
+operator removes the sweep's child AIPerfJobs and their owned JobSets and pods.
+Results already copied to the operator PVC remain available as archived runs.
+The request is asynchronous and is fenced by the sweep UID and resource
+version observed by the server.
+
+```bash
+curl -X DELETE \
+  -H "Authorization: Bearer ${AIPERF_OPERATOR_MUTATING_ROUTES_TOKEN}" \
+  http://localhost:8081/api/v1/sweeps/my-benchmarks/aiperf-sweep-7f2a
+```
+
+```json
+{"deleted": true}
+```
+
+**Status codes**
+
+- `200` — deletion accepted by Kubernetes
+- `400` — only archived PVC results exist; there is no live CR to delete
+- `401` / `403` — mutating-route gate or RBAC denial
+- `404` — neither a live CR nor archived results exist
+- `409` — resource identity or concurrent-modification conflict
 - `503` — Kubernetes client unavailable
 
 ### `GET /api/v1/cluster`
@@ -741,7 +802,7 @@ curl http://localhost:8081/api/v1/config/my-benchmarks/aiperf-bench-7f2a
 
 Read-only results-server routes do not authenticate individual HTTP requests. Mutating routes are disabled by default and require an explicit bearer token when enabled.
 
-- **Mutating-route gate.** `POST /api/v1/jobs`, `POST /api/v1/jobs/{namespace}/{name}/cancel`, and `POST /api/v1/sweeps` return `403` unless `AIPERF_OPERATOR_MUTATING_ROUTES_ENABLED=true` is set on the results-server. When enabled, `AIPERF_OPERATOR_MUTATING_ROUTES_TOKEN` must also be set — an enabled-but-tokenless server also returns `403` — and callers must send `Authorization: Bearer <token>`; a missing, non-bearer, or mismatched credential returns `401`. The token comparison uses `secrets.compare_digest`. Note that `POST /admin/index/rebuild` is separately **disabled** on the results-server (`allow_rebuild=False`) and returns `503` regardless of the token — the index is rebuilt automatically at operator startup.
+- **Mutating-route gate.** `POST /api/v1/jobs`, `POST /api/v1/jobs/{namespace}/{name}/cancel`, `DELETE /api/v1/jobs/{namespace}/{name}`, `POST /api/v1/sweeps`, and `DELETE /api/v1/sweeps/{namespace}/{name}` return `403` unless `AIPERF_OPERATOR_MUTATING_ROUTES_ENABLED=true` is set on the results-server. When enabled, `AIPERF_OPERATOR_MUTATING_ROUTES_TOKEN` must also be set — an enabled-but-tokenless server also returns `403` — and callers must send `Authorization: Bearer <token>`; a missing, non-bearer, or mismatched credential returns `401`. The token comparison uses `secrets.compare_digest`. Note that `POST /admin/index/rebuild` is separately **disabled** on the results-server (`allow_rebuild=False`) and returns `503` regardless of the token — the index is rebuilt automatically at operator startup.
 - **Env var aliases.** `OperatorEnvironment` parses these settings at process startup. `AIPERF_OPERATOR_MUTATING_ROUTES_ENABLED` and `AIPERF_OPERATOR_MUTATING_ROUTES_TOKEN` are the preferred, higher-precedence aliases; `AIPERF_MUTATING_ROUTES_ENABLED` and `AIPERF_MUTATING_ROUTES_TOKEN` remain compatibility aliases. `routers/mutating_auth.py` consumes only the validated typed settings.
 - **Helm configuration.** The bundled chart does **not** template these variables — there is no `resultsServer.mutatingRoutes` value and no token-secret projection. Set `AIPERF_OPERATOR_MUTATING_ROUTES_ENABLED` and `AIPERF_OPERATOR_MUTATING_ROUTES_TOKEN` directly on the `results-server` container (e.g. via a deployment patch or a customized chart template).
 - **First-party callers.** Clients must send the configured token as `Authorization: Bearer <token>` on protected POST requests. Note the rebuild route is mounted with `allow_rebuild=False` on the results-server and always returns `503`; only a fresh bootstrap in the operator's writer process rebuilds the index, so restart the operator pod instead. The browser dashboard *does* expose create/cancel controls: it prompts for the bearer token, holds it in `sessionStorage` for the tab's lifetime, and sends it on those POSTs (`ui/lib/api.js` `mutatingFetch`, `ui/components/token-modal.js`). A `401` clears the stored token and re-prompts. `aiperf kube` and `kubectl` remain the token-free paths, since they talk to the apiserver directly rather than through the results-server.

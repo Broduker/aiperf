@@ -262,6 +262,16 @@ export const api = {
     return mutatingFetch(`/jobs/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/cancel`, { method: 'POST' });
   },
 
+  /** Delete a live job and its owned Kubernetes resources. Requires a bearer token. */
+  deleteJob(ns, name) {
+    return mutatingFetch(`/jobs/${encodeURIComponent(ns)}/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  },
+
+  /** Delete a live sweep and its owned Kubernetes resources. Requires a bearer token. */
+  deleteSweep(ns, name) {
+    return mutatingFetch(`/sweeps/${encodeURIComponent(ns)}/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  },
+
   /** Get cluster-level info */
   getCluster() {
     return apiFetch('/cluster');

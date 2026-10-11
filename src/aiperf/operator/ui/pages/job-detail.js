@@ -1480,6 +1480,12 @@ export function JobDetail({ namespace, name, epoch }) {
   const [cancelError, setCancelError] = useState(null);
   const [showCancelTokenModal, setShowCancelTokenModal] = useState(false);
   const pendingCancelRef = useRef(null);
+  // Delete-button state: deletion is destructive, so require an inline
+  // confirmation and keep the request disabled while Kubernetes accepts it.
+  const [deleteState, setDeleteState] = useState('idle');
+  const [deleteError, setDeleteError] = useState(null);
+  const [showDeleteTokenModal, setShowDeleteTokenModal] = useState(false);
+  const pendingDeleteRef = useRef(null);
 
   const resultsBase = epoch
     ? `/api/v1/results/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/runs/${encodeURIComponent(epoch)}`
@@ -1775,6 +1781,24 @@ export function JobDetail({ namespace, name, epoch }) {
     }
   }
 
+  async function handleDelete() {
+    setDeleteError(null);
+    setDeleteState('pending');
+    try {
+      await api.deleteJob(namespace, name);
+      navigate('/jobs');
+    } catch (e) {
+      if (isTokenRequiredError(e)) {
+        setDeleteState('idle');
+        pendingDeleteRef.current = () => handleDelete();
+        setShowDeleteTokenModal(true);
+        return;
+      }
+      setDeleteError(e?.message ?? String(e));
+      setDeleteState('idle');
+    }
+  }
+
   function onCancelTokenConfirm(token) {
     setSessionToken(token);
     setShowCancelTokenModal(false);
@@ -1786,6 +1810,19 @@ export function JobDetail({ namespace, name, epoch }) {
   function onCancelTokenCancel() {
     pendingCancelRef.current = null;
     setShowCancelTokenModal(false);
+  }
+
+  function onDeleteTokenConfirm(token) {
+    setSessionToken(token);
+    setShowDeleteTokenModal(false);
+    const retry = pendingDeleteRef.current;
+    pendingDeleteRef.current = null;
+    if (retry) retry();
+  }
+
+  function onDeleteTokenCancel() {
+    pendingDeleteRef.current = null;
+    setShowDeleteTokenModal(false);
   }
 
   if (!job && !error) {
@@ -1987,9 +2024,9 @@ export function JobDetail({ namespace, name, epoch }) {
               </p>
             `}
           </div>
-          ${isRunning && html`
+          ${!isArchived && html`
             <div class="job-detail-header-actions">
-              ${cancelState === 'idle' && html`
+              ${isRunning && cancelState === 'idle' && html`
                 <button type="button"
                   class="btn btn--danger"
                   onclick=${() => setCancelState('confirm')}
@@ -2000,7 +2037,7 @@ export function JobDetail({ namespace, name, epoch }) {
                   Cancel run
                 </button>
               `}
-              ${cancelState === 'confirm' && html`
+              ${isRunning && cancelState === 'confirm' && html`
                 <div style=${'display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: ' + colors.error + '11; border: 1px solid ' + colors.error + '44; border-radius: var(--radius-md)'}>
                   <span style=${'font-size: var(--font-size-sm); color: ' + colors.error}>
                     Stop benchmark for <strong>${name}</strong>? The CR is kept (use "kubectl delete" to remove it).
@@ -2020,7 +2057,7 @@ export function JobDetail({ namespace, name, epoch }) {
                   </button>
                 </div>
               `}
-              ${cancelState === 'pending' && html`
+              ${isRunning && cancelState === 'pending' && html`
                 <button type="button"
                   disabled
                   style=${'background: ' + colors.error + '22; color: ' + colors.error + '; border: 1px solid ' + colors.error + '44; padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); cursor: not-allowed; font-size: var(--font-size-sm); display: inline-flex; align-items: center; gap: var(--space-2); opacity: 0.7'}
@@ -2030,8 +2067,52 @@ export function JobDetail({ namespace, name, epoch }) {
                   Cancelling…
                 </button>
               `}
-              ${cancelError && html`
+              ${isRunning && cancelError && html`
                 <span style=${'font-size: var(--font-size-xs); color: ' + colors.error}>Cancel failed: ${cancelError}</span>
+              `}
+              ${deleteState === 'idle' && html`
+                <button type="button"
+                  class="btn btn--danger"
+                  onclick=${() => { setDeleteError(null); setDeleteState('confirm'); }}
+                  style=${'background: transparent; color: ' + colors.error + '; border: 1px solid ' + colors.error + '66; padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); cursor: pointer; font-size: var(--font-size-sm)'}
+                  data-testid="job-detail-delete"
+                  title="Delete the AIPerfJob and its Kubernetes resources. Archived results already copied to the results PVC are retained."
+                >
+                  Delete task
+                </button>
+              `}
+              ${deleteState === 'confirm' && html`
+                <div style=${'display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: ' + colors.error + '11; border: 1px solid ' + colors.error + '44; border-radius: var(--radius-md)'}>
+                  <span style=${'font-size: var(--font-size-sm); color: ' + colors.error}>
+                    Delete <strong>${name}</strong>? Kubernetes resources are removed; archived results are retained.
+                  </span>
+                  <button type="button"
+                    onclick=${handleDelete}
+                    style=${'background: ' + colors.error + '; color: white; border: none; padding: var(--space-1) var(--space-3); border-radius: var(--radius-sm); cursor: pointer; font-size: var(--font-size-sm)'}
+                    data-testid="job-detail-delete-confirm"
+                  >
+                    Yes, delete
+                  </button>
+                  <button type="button"
+                    onclick=${() => { setDeleteState('idle'); setDeleteError(null); }}
+                    style=${'background: transparent; color: ' + palette.subtext0 + '; border: 1px solid ' + palette.overlay0 + '44; padding: var(--space-1) var(--space-3); border-radius: var(--radius-sm); cursor: pointer; font-size: var(--font-size-sm)'}
+                  >
+                    Keep task
+                  </button>
+                </div>
+              `}
+              ${deleteState === 'pending' && html`
+                <button type="button"
+                  disabled
+                  style=${'background: ' + colors.error + '22; color: ' + colors.error + '; border: 1px solid ' + colors.error + '44; padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); cursor: not-allowed; font-size: var(--font-size-sm); display: inline-flex; align-items: center; gap: var(--space-2); opacity: 0.7'}
+                  data-testid="job-detail-delete"
+                >
+                  <${Spinner} size=${12} />
+                  Deleting…
+                </button>
+              `}
+              ${deleteError && html`
+                <span style=${'font-size: var(--font-size-xs); color: ' + colors.error}>Delete failed: ${deleteError}</span>
               `}
             </div>
           `}
@@ -2276,5 +2357,6 @@ export function JobDetail({ namespace, name, epoch }) {
     </style>
 
     ${showCancelTokenModal && html`<${TokenModal} onConfirm=${onCancelTokenConfirm} onCancel=${onCancelTokenCancel} />`}
+    ${showDeleteTokenModal && html`<${TokenModal} onConfirm=${onDeleteTokenConfirm} onCancel=${onDeleteTokenCancel} />`}
   `;
 }

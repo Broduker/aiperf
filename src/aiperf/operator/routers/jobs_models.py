@@ -60,6 +60,12 @@ class JobDetailResponse(AIPerfBaseModel):
     pods: list[JobPodSummary] = Field(description="Pod summaries for this job.")
 
 
+class DeleteResponse(AIPerfBaseModel):
+    """Acknowledgement returned after a Kubernetes resource delete is accepted."""
+
+    deleted: bool = Field(description="True when deletion was accepted by Kubernetes.")
+
+
 class ClusterResponse(AIPerfBaseModel):
     """Response for GET /api/v1/cluster."""
 

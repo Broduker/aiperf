@@ -21,6 +21,14 @@ async def _post(app, path: str, *, token: str | None = None, json: dict | None =
         return await client.post(path, headers=headers, json=json)
 
 
+async def _delete(app, path: str, *, token: str | None = None):
+    headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.delete(path, headers=headers)
+
+
 def _enable_mutating_routes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set process-startup settings for tests after the singleton is imported."""
     from aiperf.operator.environment import OperatorEnvironment
@@ -182,6 +190,62 @@ async def test_cancel_job_route_allows_configured_token(
     assert response.status_code == 200
     assert response.status_code not in {401, 403}
     cancel_impl.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_job_route_requires_and_accepts_configured_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dashboard job deletion is protected by the mutating-route token."""
+    from aiperf.operator.routers.jobs import create_jobs_router
+    from aiperf.operator.routers.mutating_auth import mutating_route_dependencies
+
+    _enable_mutating_routes(monkeypatch)
+    app = FastAPI()
+    app.include_router(
+        create_jobs_router([object()], tmp_path, mutating_route_dependencies())
+    )
+    delete_impl = AsyncMock(return_value={"deleted": True})
+
+    with patch("aiperf.operator.routers.jobs._delete_job_impl", delete_impl):
+        missing = await _delete(app, "/api/v1/jobs/default/bench")
+        assert missing.status_code == 401
+
+        response = await _delete(
+            app, "/api/v1/jobs/default/bench", token="correct-token"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": True}
+    delete_impl.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_sweep_route_requires_and_accepts_configured_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dashboard sweep deletion is protected by the mutating-route token."""
+    from aiperf.operator.routers.mutating_auth import mutating_route_dependencies
+    from aiperf.operator.routers.sweeps import create_sweeps_router
+
+    _enable_mutating_routes(monkeypatch)
+    app = FastAPI()
+    app.include_router(
+        create_sweeps_router([object()], tmp_path, mutating_route_dependencies())
+    )
+    delete_impl = AsyncMock(return_value={"deleted": True})
+
+    with patch("aiperf.operator.routers.sweeps._delete_sweep_impl", delete_impl):
+        missing = await _delete(app, "/api/v1/sweeps/default/bench")
+        assert missing.status_code == 401
+
+        response = await _delete(
+            app, "/api/v1/sweeps/default/bench", token="correct-token"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": True}
+    delete_impl.assert_awaited_once()
 
 
 @pytest.mark.asyncio

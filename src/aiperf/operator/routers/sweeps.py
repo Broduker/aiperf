@@ -39,6 +39,7 @@ from aiperf.operator.results_layout import (
     list_sweep_epochs_async,
     resolve_sweep_dir,
 )
+from aiperf.operator.routers._delete import delete_live_custom_resource
 from aiperf.operator.routers._etag import etag_response
 from aiperf.operator.routers._path_params import validate_results_path_params
 from aiperf.operator.routers._sweeps_artifacts import register_sweep_artifact_routes
@@ -49,6 +50,7 @@ from aiperf.operator.routers._sweeps_diagnostics import (
 from aiperf.operator.routers._sweeps_spec import (
     spec_summary_from_record,
 )
+from aiperf.operator.routers.jobs_models import DeleteResponse
 from aiperf.operator.routers.sweeps_models import (
     MAX_BEST_TRIALS,
     CellAggregatesResponse,
@@ -897,13 +899,50 @@ async def _create_sweep_impl(
     return CreateSweepResponse(namespace=namespace, name=name, uid=uid)
 
 
+async def _delete_sweep_impl(
+    api: ApiClient,
+    base_dir: Path,
+    namespace: str,
+    name: str,
+) -> DeleteResponse:
+    """Delete a live AIPerfSweep and its owned child workloads."""
+    sweep = await find_any_sweep(api, base_dir, namespace, name)
+    if sweep is None:
+        raise HTTPException(404, f"Sweep {namespace}/{name} not found")
+    if sweep.source == "archived":
+        raise HTTPException(
+            400,
+            f"Cannot delete archived sweep {namespace}/{name}: "
+            "the Kubernetes resource no longer exists.",
+        )
+    await delete_live_custom_resource(
+        api,
+        group="aiperf.nvidia.com",
+        version="v1alpha1",
+        plural="aiperfsweeps",
+        kind="AIPerfSweep",
+        namespace=namespace,
+        name=name,
+    )
+    return DeleteResponse(deleted=True)
+
+
 def _register_sweep_mutating_routes(
     router: APIRouter,
     require_api: Callable[[], ApiClient],
     base_dir: Path,
     mutating_dependencies: Sequence[DependsParam],
 ) -> None:
-    """Register POST /sweeps (create) and GET /sweeps/{ns}/{name}/config."""
+    """Register sweep create, delete, and config endpoints."""
+
+    @router.delete(
+        "/sweeps/{namespace}/{name}",
+        response_model=DeleteResponse,
+        dependencies=list(mutating_dependencies),
+    )
+    async def delete_sweep(namespace: str, name: str) -> DeleteResponse:
+        validate_results_path_params(namespace, name)
+        return await _delete_sweep_impl(require_api(), base_dir, namespace, name)
 
     @router.get(
         "/sweeps/{namespace}/{name}/config",

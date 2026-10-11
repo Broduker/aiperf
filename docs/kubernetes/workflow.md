@@ -317,6 +317,13 @@ selecting one kind by lookup order.
 Cancelling is not the same as deleting: the CR (and any results already
 harvested) stays, so `aiperf kube results` still works afterwards.
 
+The Dashboard offers the same cancellation action and a confirmed **Delete
+task** action on live job and sweep detail pages. Dashboard deletion uses the
+results-server bearer token, removes the live Kubernetes resource and owned
+workloads, and retains artifacts already harvested to the operator PVC. An
+archived-only result cannot be deleted because its Kubernetes resource is
+already gone.
+
 ### Retiring and removing runs
 
 ```bash

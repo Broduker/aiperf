@@ -45,6 +45,7 @@ from aiperf.operator.results_layout import (
     list_runs_async,
     resolve_run_dir,
 )
+from aiperf.operator.routers._delete import delete_live_custom_resource
 from aiperf.operator.routers._etag import etag_response
 from aiperf.operator.routers._path_params import validate_results_path_params
 from aiperf.operator.routers.jobs_logs import get_pod_logs_impl
@@ -54,6 +55,7 @@ from aiperf.operator.routers.jobs_models import (
     ClusterResponse,
     CreateJobRequest,
     CreateJobResponse,
+    DeleteResponse,
     EventEntry,
     EventInvolvedObject,
     EventSource,
@@ -725,6 +727,34 @@ async def _cancel_job_impl(
     return CancelResponse(cancelled=True)
 
 
+async def _delete_job_impl(
+    api: ApiClient,
+    results_dir: Path,
+    namespace: str,
+    name: str,
+) -> DeleteResponse:
+    """Delete a live AIPerfJob and let Kubernetes garbage-collect its workloads."""
+    job = await find_any_job(api, results_dir, namespace, name)
+    if job is None:
+        raise HTTPException(404, f"Job {namespace}/{name} not found")
+    if job.source == "archived":
+        raise HTTPException(
+            400,
+            f"Cannot delete archived job {namespace}/{name}: "
+            "the Kubernetes resource no longer exists.",
+        )
+    await delete_live_custom_resource(
+        api,
+        group="aiperf.nvidia.com",
+        version="v1alpha1",
+        plural="aiperfjobs",
+        kind="AIPerfJob",
+        namespace=namespace,
+        name=name,
+    )
+    return DeleteResponse(deleted=True)
+
+
 MAX_EVENTS_RETURNED = 200
 
 # GKE-managed ValidatingAdmissionPolicies whose CEL expressions error out on
@@ -956,7 +986,16 @@ def _register_job_action_routes(
     results_dir: Path,
     mutating_dependencies: Sequence[DependsParam],
 ) -> None:
-    """Register the per-job cancel, events, and pod-log endpoints."""
+    """Register the per-job cancel, delete, events, and pod-log endpoints."""
+
+    @router.delete(
+        "/jobs/{namespace}/{name}",
+        response_model=DeleteResponse,
+        dependencies=list(mutating_dependencies),
+    )
+    async def delete_job(namespace: str, name: str) -> DeleteResponse:
+        validate_results_path_params(namespace, name)
+        return await _delete_job_impl(require_api(), results_dir, namespace, name)
 
     @router.post(
         "/jobs/{namespace}/{name}/cancel",

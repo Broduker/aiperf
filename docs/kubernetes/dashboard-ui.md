@@ -85,8 +85,8 @@ itself — whoever can reach port 8081 inside the cluster (or through a forward)
 can view every job and every result. Do not expose this port via an
 unauthenticated Ingress.
 
-Mutating actions (submit or cancel a run) *are* reachable from the browser, but
-only through the operator's bearer token. `lib/api.js` routes them
+Mutating actions (submit, cancel, or delete a run) *are* reachable from the
+browser, but only through the operator's bearer token. `lib/api.js` routes them
 through `mutatingFetch`, which requires a token in `sessionStorage`; the first
 attempt without one raises a `TOKEN_REQUIRED` error, the page opens
 `components/token-modal.js` to collect it, and the action retries. A `401`
@@ -244,7 +244,11 @@ button is live: clicking it swaps in an inline confirm/keep-running pair, and
 confirming calls `POST /api/v1/jobs/{ns}/{name}/cancel` (prompting for the
 bearer token if none is stored). The button shows a spinner while the patch is
 in flight and stays pending until the next poll moves the phase out of running;
-a failure is reported inline as "Cancel failed: …".
+a failure is reported inline as "Cancel failed: …". A **Delete task** action
+is also available for live jobs: it requires confirmation, calls
+`DELETE /api/v1/jobs/{ns}/{name}`, and removes the Kubernetes CR and owned
+workloads while retaining results already copied to the results PVC. Archived-
+only entries do not show the delete action.
 
 **After completion:** SLA compliance, server metrics, job configuration (with a
 View-YAML modal), run metadata, per-record analysis (from
@@ -318,6 +322,10 @@ as `not measured` rather than borrowing a neighbouring objective's number.
 **Endpoints consumed:** `GET /api/v1/sweeps/{ns}/{name}[?epoch=]` (5s),
 `.../cells`, `.../epochs`, `.../children`,
 `.../epochs/{epoch}/artifacts`, and per-child `GET /api/v1/jobs/{ns}/{name}`.
+The detail header also provides a confirmed **Delete task** action for live
+sweeps. It calls `DELETE /api/v1/sweeps/{ns}/{name}` with the same bearer-token
+prompt as job deletion; child jobs and workloads are removed, while archived
+PVC results remain available. Archived-only sweeps do not show the action.
 
 ### Leaderboard (`/leaderboard`)
 
