@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
+from threading import get_ident
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -126,6 +127,27 @@ class TestDatasetManager:
     Note: Dataset sampling tests have been moved to test_dataset_samplers.py
     since sampling is now handled by timing strategies, not DatasetManager.
     """
+
+    @pytest.mark.asyncio
+    async def test_configure_dataset_synthetic_generation_runs_off_event_loop(
+        self, initialized_dataset_manager: DatasetManager
+    ) -> None:
+        """Dataset composition must not starve health probes and heartbeats."""
+        event_loop_thread = get_ident()
+        conversations = create_mock_conversations(["first", "second"])
+
+        def load_conversations() -> list[Conversation]:
+            assert get_ident() != event_loop_thread
+            return conversations
+
+        with patch.object(
+            initialized_dataset_manager,
+            "_load_synthetic_dataset",
+            side_effect=load_conversations,
+        ):
+            await initialized_dataset_manager._configure_dataset()
+
+        assert initialized_dataset_manager.dataset_metadata.total_turn_count == 2
 
     @pytest.mark.asyncio
     async def test_dataset_configured_notification_for_multi_turn_conversations(

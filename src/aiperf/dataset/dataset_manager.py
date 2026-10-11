@@ -530,7 +530,9 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
             await asyncio.to_thread(file_path.parent.mkdir, parents=True, exist_ok=True)
 
             model_endpoint = ModelEndpointInfo.from_run(self.run)
-            inputs = self._generate_input_payloads(model_endpoint)
+            inputs = await asyncio.to_thread(
+                self._generate_input_payloads, model_endpoint
+            )
 
             async with aiofiles.open(temp_file_path, "wb") as f:
                 await f.write(
@@ -955,9 +957,9 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
             # Use CUSTOM composer if the dataset is file-backed (FileDataset
             # or any composed/file-source variant exposing a `path`). The
             # composer auto-infers the format.
-            conversations = self._load_custom_dataset()
+            conversations = await asyncio.to_thread(self._load_custom_dataset)
         else:
-            conversations = self._load_synthetic_dataset()
+            conversations = await asyncio.to_thread(self._load_synthetic_dataset)
 
         self.dataset = {conv.session_id: conv for conv in conversations}
         self._conversation_ids_cache = [
@@ -983,7 +985,7 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         # complete. Safe only when every turn's payload is fully deterministic
         # at compose time: single-turn conversations, or multi-turn with
         # pre-canned assistant responses (WITH_RESPONSES context modes).
-        self._preformat_payloads(conversations)
+        await asyncio.to_thread(self._preformat_payloads, conversations)
 
         mmap_format = self._select_mmap_format(conversations)
 

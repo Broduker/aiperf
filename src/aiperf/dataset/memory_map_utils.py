@@ -164,7 +164,7 @@ class MemoryMapDatasetBackingStore(AIPerfLifecycleMixin):
     async def _write_bytes(self, data: bytes) -> None:
         """Write bytes to the active output (compressed stream or async file)."""
         if self._compress_only:
-            self._stream_writer.write(data)
+            await asyncio.to_thread(self._stream_writer.write, data)
         else:
             await self._data_file.write(data)
 

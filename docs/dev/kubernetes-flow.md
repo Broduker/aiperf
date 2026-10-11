@@ -1094,6 +1094,14 @@ diagnostics: every condition above is still logged, only the verdict changes.
 A genuinely crashed local child still reports `is_alive() is False` and is
 still reaped, which remains strictly stronger than having no watchdog at all.
 
+Dataset composition, payload preformatting, inputs-payload generation, and
+compressed dataset writes run off the DatasetManager event loop. Large synthetic
+datasets must not prevent service heartbeats or HTTP health probes from being
+served during configuration. Raising service-heartbeat tolerances alone does
+not prevent Kubernetes health probes from terminating an unresponsive container;
+an exit code of 137 alone is not proof of an OOM kill. Dataset entry counts and
+token lengths are preserved by this offloading.
+
 ## Key Architecture Decisions
 
 | Decision | Rationale |
