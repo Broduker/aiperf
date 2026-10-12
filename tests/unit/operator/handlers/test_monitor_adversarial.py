@@ -79,6 +79,7 @@ def _body(
     claimed: bool = False,
     generation: int | None = 7,
     uid: str | None = None,
+    keep_failed_pods: bool = False,
 ) -> dict[str, Any]:
     """Build a realistic AIPerfJob body for monitor helper tests.
 
@@ -100,7 +101,10 @@ def _body(
         metadata["annotations"] = {
             Annotations.COMPLETION_CLAIMED: "2026-05-18T09:42:11Z"
         }
-    return {"kind": "AIPerfJob", "metadata": metadata}
+    body: dict[str, Any] = {"kind": "AIPerfJob", "metadata": metadata}
+    if keep_failed_pods:
+        body["spec"] = {"keepFailedPods": True}
+    return body
 
 
 def _owned_jobset() -> dict[str, Any]:
@@ -614,4 +618,22 @@ class TestCancellationAndRetrySemantics:
             )
 
         assert deleted is False
+        custom.delete_namespaced_custom_object.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_keep_failed_pods_skips_failure_cleanup(self) -> None:
+        """Retained failed pods must keep the owned JobSet available for triage."""
+        custom = MagicMock()
+        custom.delete_namespaced_custom_object = AsyncMock()
+
+        with _fenced_jobset_api(custom):
+            deleted = await _delete_jobset_or_retry(
+                custom,
+                "bench-prod",
+                _JOBSET_NAME,
+                body=_body(uid=_FIXTURE_UID, keep_failed_pods=True),
+                context="partial checkpoint recovery",
+            )
+
+        assert deleted is True
         custom.delete_namespaced_custom_object.assert_not_awaited()

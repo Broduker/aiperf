@@ -424,7 +424,15 @@ async def _delete_jobset_or_retry(
     body: dict[str, Any],
     context: str,
 ) -> bool:
-    """Delete the exact owned JobSet and report whether status may finalize."""
+    """Delete the owned JobSet unless failed pods were explicitly retained."""
+    if (body.get("spec") or {}).get("keepFailedPods") is True:
+        logger.info(
+            "Keeping JobSet %s after %s because spec.keepFailedPods=true",
+            jobset_name,
+            context,
+        )
+        return True
+
     del custom  # Shared identity helper owns a short-lived, closed API client.
     deleted = await delete_owned_aiperfjob_jobset(
         namespace,

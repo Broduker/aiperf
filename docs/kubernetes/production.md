@@ -586,7 +586,7 @@ spec:
   keepFailedPods: true   # default: false; retains failed JobSet pods for kubectl logs/exec
 ```
 
-This changes JobSet lifecycle (completed pods still get reaped via `ttlSecondsAfterFinished`); enable it only while diagnosing, then remove for steady-state runs.
+When the job fails, the operator skips its normal JobSet deletion, so the controller and worker pods remain available for `kubectl describe`, `kubectl logs`, and `kubectl exec`. Successful jobs still use the normal completion cleanup path. The option is immutable after creation; enable it only while diagnosing and delete the retained JobSet after collecting evidence.
 
 ### Deploying Before the Endpoint Is Reachable
 
