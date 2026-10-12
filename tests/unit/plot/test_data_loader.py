@@ -11,6 +11,7 @@ from typing import Any
 import orjson
 import pandas as pd
 import pytest
+import zstandard
 
 from aiperf.plot.core.data_loader import DataLoader, RunData, RunMetadata
 from aiperf.plot.exceptions import DataLoadError
@@ -33,6 +34,28 @@ class TestDataLoaderLoadRun:
         assert len(run.requests) == 10
         assert "time_to_first_token" in run.requests.columns
         assert "request_latency" in run.requests.columns
+
+    def test_load_compressed_jsonl_run(
+        self,
+        tmp_path: Path,
+        sample_jsonl_data: list[dict[str, Any]],
+        sample_aggregated_data: dict[str, Any],
+    ) -> None:
+        """Test loading per-request data from a zstd-compressed JSONL file."""
+        run_dir = tmp_path / "compressed_run"
+        run_dir.mkdir()
+        jsonl = b"".join(orjson.dumps(record) + b"\n" for record in sample_jsonl_data)
+        (run_dir / "profile_export.jsonl.zst").write_bytes(
+            zstandard.ZstdCompressor().compress(jsonl)
+        )
+        (run_dir / "profile_export_aiperf.json").write_bytes(
+            orjson.dumps(sample_aggregated_data)
+        )
+
+        run = DataLoader().load_run(run_dir)
+
+        assert run.requests is not None
+        assert len(run.requests) == len(sample_jsonl_data)
 
     def test_load_run_reads_slice_duration_from_artifacts_config(
         self,

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import orjson
 import pytest
+import zstandard
 
 from aiperf.plot.core.mode_detector import (
     ModeDetector,
@@ -192,6 +193,18 @@ class TestIsRunDirectory:
         """Test that valid run directory is detected."""
 
         assert mode_detector._is_run_directory(single_run_dir) is True
+
+    def test_compressed_jsonl_run_directory(
+        self, mode_detector: ModeDetector, tmp_path: Path
+    ) -> None:
+        """Test that a zstd-compressed request export is recognized."""
+        run_dir = tmp_path / "compressed_run"
+        run_dir.mkdir()
+        compressed = zstandard.ZstdCompressor().compress(b'{"test": "run"}\n')
+        (run_dir / "profile_export.jsonl.zst").write_bytes(compressed)
+        (run_dir / "profile_export_aiperf.json").write_text("{}")
+
+        assert mode_detector._is_run_directory(run_dir) is True
 
     def test_directory_without_required_file(
         self, mode_detector: ModeDetector, tmp_path: Path

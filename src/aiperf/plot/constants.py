@@ -15,6 +15,7 @@ from aiperf.config.artifacts import OutputDefaults
 
 # File patterns for AIPerf profiling output files. These reference the canonical definitions from OutputDefaults
 PROFILE_EXPORT_JSONL = OutputDefaults.PROFILE_EXPORT_JSONL_FILE.name
+PROFILE_EXPORT_JSONL_ZST = f"{PROFILE_EXPORT_JSONL}.zst"
 PROFILE_EXPORT_AIPERF_JSON = OutputDefaults.PROFILE_EXPORT_AIPERF_JSON_FILE.name
 PROFILE_EXPORT_AIPERF_AGGREGATE_JSON = "profile_export_aiperf_aggregate.json"
 """Per-cell confidence-aggregate JSON written by the sweep orchestrator at

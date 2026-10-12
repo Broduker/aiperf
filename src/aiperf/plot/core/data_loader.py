@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import orjson
 import pandas as pd
+import zstandard
 from pydantic import Field, ValidationError
 
 from aiperf.common.constants import STAT_KEYS
@@ -36,6 +37,7 @@ from aiperf.plot.constants import (
     PROFILE_EXPORT_AIPERF_JSON,
     PROFILE_EXPORT_GPU_TELEMETRY_JSONL,
     PROFILE_EXPORT_JSONL,
+    PROFILE_EXPORT_JSONL_ZST,
     PROFILE_EXPORT_TIMESLICES_CSV,
     SERVER_METRICS_EXPORT_JSON,
     SERVER_METRICS_EXPORT_PARQUET,
@@ -311,7 +313,7 @@ class DataLoader(AIPerfLoggerMixin):
 
         self.info(f"Loading run from: {run_path}")
 
-        jsonl_path = run_path / PROFILE_EXPORT_JSONL
+        jsonl_path = self._resolve_jsonl_path(run_path)
         if not jsonl_path.exists():
             aggregate_path = run_path / PROFILE_EXPORT_AIPERF_AGGREGATE_JSON
             if aggregate_path.exists():
@@ -434,6 +436,14 @@ class DataLoader(AIPerfLoggerMixin):
             server_metrics=server_metrics_df,
             server_metrics_aggregated=server_metrics_aggregated,
         )
+
+    @staticmethod
+    def _resolve_jsonl_path(run_path: Path) -> Path:
+        """Return the raw or zstd-compressed request JSONL path."""
+        jsonl_path = run_path / PROFILE_EXPORT_JSONL
+        if jsonl_path.exists():
+            return jsonl_path
+        return run_path / PROFILE_EXPORT_JSONL_ZST
 
     def _load_aggregate_only(self, run_path: Path, aggregate_path: Path) -> RunData:
         """Load a per-cell confidence-aggregate dir as a pseudo-run.
@@ -840,7 +850,12 @@ class DataLoader(AIPerfLoggerMixin):
         corrupted_lines = 0
 
         try:
-            with open(jsonl_path, encoding="utf-8") as f:
+            open_file = (
+                zstandard.open(jsonl_path, mode="rt", encoding="utf-8")
+                if jsonl_path.suffix == ".zst"
+                else jsonl_path.open(encoding="utf-8")
+            )
+            with open_file as f:
                 for line_num, line in enumerate(f, 1):
                     line = line.strip()
                     if not line:
@@ -875,7 +890,7 @@ class DataLoader(AIPerfLoggerMixin):
 
             return records
 
-        except OSError as e:
+        except (OSError, zstandard.ZstdError) as e:
             raise DataLoadError(
                 f"Failed to read {file_description} file: {e}", path=str(jsonl_path)
             ) from e

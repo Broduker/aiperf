@@ -16,6 +16,7 @@ from aiperf.plot.constants import (
     PROFILE_EXPORT_AIPERF_AGGREGATE_JSON,
     PROFILE_EXPORT_AIPERF_JSON,
     PROFILE_EXPORT_JSONL,
+    PROFILE_EXPORT_JSONL_ZST,
     TRIAL_RUNS_SUBDIR,
 )
 from aiperf.plot.exceptions import ModeDetectionError
@@ -188,10 +189,12 @@ class ModeDetector(AIPerfLoggerMixin):
 
         try:
             jsonl_file = path / PROFILE_EXPORT_JSONL
+            compressed_jsonl_file = path / PROFILE_EXPORT_JSONL_ZST
             aiperf_json_file = path / PROFILE_EXPORT_AIPERF_JSON
-            if self._file_present(path, jsonl_file) and self._file_present(
-                path, aiperf_json_file
-            ):
+            if (
+                self._file_present(path, jsonl_file)
+                or self._file_present(path, compressed_jsonl_file)
+            ) and self._file_present(path, aiperf_json_file):
                 return True
 
             aggregate_file = path / PROFILE_EXPORT_AIPERF_AGGREGATE_JSON
