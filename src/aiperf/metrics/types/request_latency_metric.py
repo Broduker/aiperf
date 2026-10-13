@@ -40,8 +40,7 @@ class RequestLatencyMetric(BaseRecordMetric[int]):
         if record.content_responses:
             final_response_ts = record.content_responses[-1].perf_ns
         elif (
-            record.request.request_info
-            and record.request.request_info.model_endpoint.endpoint.allow_empty_response_content
+            record.empty_content_allowed
             and record.has_completion_evidence
             and record.responses
         ):

@@ -60,7 +60,7 @@ class TestRequestLatencyMetric:
         record = create_record(start_ns=100, responses=[150])
         record.responses[0].data = None
         record.responses[0].metadata["finish_reason"] = "stop"
-        record.request.request_info.model_endpoint.endpoint.allow_empty_response_content = True
+        record.allow_empty_response_content = True
 
         metric_results = run_simple_metrics_pipeline(
             [record],

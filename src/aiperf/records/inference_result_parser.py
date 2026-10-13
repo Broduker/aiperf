@@ -379,6 +379,7 @@ class InferenceResultParser(CommunicationMixin):
             responses=resp,
             token_counts=token_counts,
             media_counts=media_counts or MediaCounts(),
+            allow_empty_response_content=self.run.cfg.endpoint.allow_empty_response_content,
             spec_decode_acceptance=self._extract_spec_decode_acceptance(
                 resp,
                 self._spec_decode_warned,

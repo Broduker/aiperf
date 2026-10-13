@@ -1709,6 +1709,9 @@ class ParsedResponseRecord:
     media_counts: MediaCounts = field(default_factory=MediaCounts)
     """Multimodal content-part counts derived once from the wire payload (images/audios/videos)."""
 
+    allow_empty_response_content: bool = False
+    """Whether empty assistant content is valid for this parsed record."""
+
     spec_decode_acceptance: SpecDecodeAcceptanceRecord | None = None
     """Engine-neutral per-request speculative-decoding acceptance record, filled
     by a ``SpecDecodeAdapterProtocol`` when the response carried spec-decode
@@ -1785,6 +1788,16 @@ class ParsedResponseRecord:
         """Check if the response record has an error."""
         return self.request.has_error
 
+    @property
+    def empty_content_allowed(self) -> bool:
+        """Return whether this record accepts protocol-only responses."""
+        if self.allow_empty_response_content:
+            return True
+        request_info = self.request.request_info
+        return isinstance(request_info, RequestInfo) and bool(
+            request_info.model_endpoint.endpoint.allow_empty_response_content
+        )
+
     @cached_property
     def valid(self) -> bool:
         """Check if the response record is valid.
@@ -1798,15 +1811,11 @@ class ParsedResponseRecord:
         Returns:
             bool: True if the record is valid, False otherwise.
         """
-        has_empty_content_override = bool(
-            self.request.request_info
-            and self.request.request_info.model_endpoint.endpoint.allow_empty_response_content
-        )
         return (
             not self.has_error
             and (
                 len(self.content_responses) > 0
-                or (has_empty_content_override and self.has_completion_evidence)
+                or (self.empty_content_allowed and self.has_completion_evidence)
             )
             and len(self.responses) > 0
             and 0 <= self.start_perf_ns < self.end_perf_ns < sys.maxsize
