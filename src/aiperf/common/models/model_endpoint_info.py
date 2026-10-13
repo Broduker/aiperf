@@ -128,6 +128,11 @@ class EndpointInfo(AIPerfBaseModel):
         description="Request per-chunk token usage via stream_options.continuous_usage_stats so "
         "the server reports cumulative usage on every streamed chunk.",
     )
+    allow_empty_response_content: bool = Field(
+        default=EndpointDefaults.ALLOW_EMPTY_RESPONSE_CONTENT,
+        description="Accept successful responses with protocol metadata or server-reported usage but no assistant content. "
+        "Content-based metrics such as TTFT and ITL remain unavailable.",
+    )
     connection_reuse_strategy: ConnectionReuseStrategy = Field(
         default=EndpointDefaults.CONNECTION_REUSE_STRATEGY,
         description="Transport connection reuse strategy.",
@@ -264,6 +269,7 @@ class ModelEndpointInfo(AIPerfBaseModel):
                 use_legacy_max_tokens=ep.use_legacy_max_tokens,
                 use_server_token_count=ep.use_server_token_count,
                 per_chunk_usage=ep.per_chunk_usage,
+                allow_empty_response_content=ep.allow_empty_response_content,
                 connection_reuse_strategy=ep.connection_reuse,
                 download_video_content=ep.download_video_content,
                 request_content_type=ep.request_content_type,

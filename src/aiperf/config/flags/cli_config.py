@@ -511,6 +511,21 @@ class CLIConfig(BaseConfig):
         ),
     ] = EndpointDefaults.PER_CHUNK_USAGE
 
+    allow_empty_response_content: Annotated[
+        bool,
+        Field(
+            description=(
+                "Accept successful responses with protocol metadata or server-reported "
+                "usage but no assistant content. Intended for simulation endpoints; "
+                "content-based metrics such as TTFT and ITL remain unavailable."
+            ),
+        ),
+        CLIParameter(
+            name=("--allow-empty-response-content",),
+            group=Groups.ENDPOINT,
+        ),
+    ] = EndpointDefaults.ALLOW_EMPTY_RESPONSE_CONTENT
+
     connection_reuse_strategy: Annotated[
         ConnectionReuseStrategy,
         Field(

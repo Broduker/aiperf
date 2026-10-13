@@ -1772,6 +1772,14 @@ class ParsedResponseRecord:
         """
         return [response for response in self.responses if response.data]
 
+    @cached_property
+    def has_completion_evidence(self) -> bool:
+        """Return whether an empty-content response has usable completion evidence."""
+        return any(
+            response.usage or response.metadata.get("finish_reason")
+            for response in self.responses
+        )
+
     @property
     def has_error(self) -> bool:
         """Check if the response record has an error."""
@@ -1790,9 +1798,17 @@ class ParsedResponseRecord:
         Returns:
             bool: True if the record is valid, False otherwise.
         """
+        has_empty_content_override = bool(
+            self.request.request_info
+            and self.request.request_info.model_endpoint.endpoint.allow_empty_response_content
+        )
         return (
             not self.has_error
-            and len(self.content_responses) > 0
+            and (
+                len(self.content_responses) > 0
+                or (has_empty_content_override and self.has_completion_evidence)
+            )
+            and len(self.responses) > 0
             and 0 <= self.start_perf_ns < self.end_perf_ns < sys.maxsize
             and all(0 < response.perf_ns < sys.maxsize for response in self.responses)
         )

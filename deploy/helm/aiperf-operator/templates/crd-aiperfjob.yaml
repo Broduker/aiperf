@@ -300,6 +300,12 @@ spec:
                           token. Requires a server that supports continuous_usage_stats (e.g. vLLM, TRT-LLM); strict OpenAI
                           rejects it. Requires use_server_token_count so OSL and the first-chunk count share the server source.
                         default: false
+                      allowEmptyResponseContent:
+                        type: boolean
+                        description: Accept successful responses whose protocol metadata or server-reported usage is present
+                          but whose assistant content is empty. Use only for deterministic simulation endpoints; content-based
+                          metrics such as TTFT and ITL remain unavailable.
+                        default: false
                       template:
                         type: object
                         description: |-

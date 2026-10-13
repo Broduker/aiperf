@@ -51,6 +51,27 @@ class TestChatEndpointParseResponse:
         assert isinstance(parsed.data, TextResponseData)
         assert parsed.data.text == "Hello, how can I help?"
 
+    def test_parse_response_empty_content_preserves_finish_reason(self, endpoint):
+        mock_response = create_mock_response(
+            123456789,
+            {
+                "object": "chat.completion",
+                "choices": [{"message": {"content": ""}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 0,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+        parsed = endpoint.parse_response(mock_response)
+
+        assert parsed is not None
+        assert parsed.data is None
+        assert parsed.metadata == {"finish_reason": "stop"}
+        assert parsed.usage is not None
+
     def test_parse_response_chat_completion_chunk(self, endpoint):
         """Test parsing streaming chat completion chunk."""
         mock_response = create_mock_response(

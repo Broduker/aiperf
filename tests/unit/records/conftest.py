@@ -34,6 +34,7 @@ def create_test_request_info(
     conversation_id: str = "cid",
     turn_index: int = 0,
     turns: list[Turn] | None = None,
+    allow_empty_response_content: bool = False,
 ) -> RequestInfo:
     """Create a RequestInfo for testing.
 
@@ -50,6 +51,7 @@ def create_test_request_info(
             endpoint=EndpointInfo(
                 type=EndpointType.CHAT,
                 base_url="http://localhost:8000/v1/test",
+                allow_empty_response_content=allow_empty_response_content,
             ),
         ),
         turns=turns or [],

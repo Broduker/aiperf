@@ -37,12 +37,19 @@ class RequestLatencyMetric(BaseRecordMetric[int]):
         """
         request_ts: int = record.start_perf_ns
 
-        # Use content_responses to get last response with actual content
-        if not record.content_responses:
+        if record.content_responses:
+            final_response_ts = record.content_responses[-1].perf_ns
+        elif (
+            record.request.request_info
+            and record.request.request_info.model_endpoint.endpoint.allow_empty_response_content
+            and record.has_completion_evidence
+            and record.responses
+        ):
+            final_response_ts = record.responses[-1].perf_ns
+        else:
             raise NoMetricValue(
                 "Request latency requires at least 1 non-empty content response."
             )
-        final_response_ts = record.content_responses[-1].perf_ns
 
         if final_response_ts < request_ts:
             raise ValueError("Final response timestamp is less than request timestamp.")

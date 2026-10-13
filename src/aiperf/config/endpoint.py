@@ -67,6 +67,7 @@ class EndpointDefaults:
     USE_LEGACY_MAX_TOKENS = False
     USE_SERVER_TOKEN_COUNT = False
     PER_CHUNK_USAGE = False
+    ALLOW_EMPTY_RESPONSE_CONTENT = False
     CONNECTION_REUSE_STRATEGY = ConnectionReuseStrategy.POOLED
     DOWNLOAD_VIDEO_CONTENT = False
     REQUEST_CONTENT_TYPE = None
@@ -499,6 +500,15 @@ class EndpointConfig(BaseConfig):
             "continuous_usage_stats (e.g. vLLM, TRT-LLM); strict OpenAI rejects it. "
             "Requires use_server_token_count so OSL and the first-chunk count share "
             "the server source.",
+        ),
+    ]
+
+    allow_empty_response_content: Annotated[
+        bool,
+        Field(
+            default=EndpointDefaults.ALLOW_EMPTY_RESPONSE_CONTENT,
+            description="Accept successful responses whose protocol metadata or server-reported usage is present but whose assistant content is empty. "
+            "Use only for deterministic simulation endpoints; content-based metrics such as TTFT and ITL remain unavailable.",
         ),
     ]
 

@@ -69,6 +69,7 @@ _ENDPOINT_FIELD_MAP: dict[str, str] = {
     "use_legacy_max_tokens": "use_legacy_max_tokens",
     "use_server_token_count": "use_server_token_count",
     "per_chunk_usage": "per_chunk_usage",
+    "allow_empty_response_content": "allow_empty_response_content",
     "connection_reuse_strategy": "connection_reuse",
     "download_video_content": "download_video_content",
     "request_content_type": "request_content_type",

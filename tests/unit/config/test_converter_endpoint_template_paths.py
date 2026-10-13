@@ -296,3 +296,8 @@ class TestEndpointFieldPropagation:
         endpoint = build_endpoint(CLIConfig())
 
         assert "per_chunk_usage" not in endpoint
+
+    def test_allow_empty_response_content_propagates_to_endpoint(self) -> None:
+        endpoint = build_endpoint(CLIConfig(allow_empty_response_content=True))
+
+        assert endpoint["allow_empty_response_content"] is True

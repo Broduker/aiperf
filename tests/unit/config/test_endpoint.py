@@ -42,6 +42,15 @@ def test_endpoint_config_timeout_uses_endpoint_default() -> None:
     assert endpoint.timeout == EndpointDefaults.TIMEOUT
 
 
+def test_endpoint_config_allows_empty_response_content_for_simulators() -> None:
+    endpoint = EndpointConfig(
+        urls=["http://localhost:8000"],
+        allow_empty_response_content=True,
+    )
+
+    assert endpoint.allow_empty_response_content is True
+
+
 def test_uuid_and_strip_rejects_non_chat_endpoint() -> None:
     with pytest.raises(ValueError, match="requires endpoint type 'chat'"):
         EndpointConfig(

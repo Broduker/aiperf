@@ -55,3 +55,16 @@ class TestRequestLatencyMetric:
         metric = RequestLatencyMetric()
         with pytest.raises(NoMetricValue, match="missing or marked invalid"):
             metric.parse_record(record, MetricRecordDict())
+
+    def test_request_latency_uses_final_response_for_empty_content_simulator(self):
+        record = create_record(start_ns=100, responses=[150])
+        record.responses[0].data = None
+        record.responses[0].metadata["finish_reason"] = "stop"
+        record.request.request_info.model_endpoint.endpoint.allow_empty_response_content = True
+
+        metric_results = run_simple_metrics_pipeline(
+            [record],
+            RequestLatencyMetric.tag,
+        )
+
+        assert metric_results[RequestLatencyMetric.tag] == [50]

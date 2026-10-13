@@ -218,12 +218,19 @@ class ChatEndpoint(BaseEndpoint):
         data = self.extract_chat_response_data(json_obj)
         usage = json_obj.get("usage") or None
         spec_decode_stats = self.extract_spec_decode_stats(json_obj)
+        metadata: dict[str, Any] = {}
+        choices = json_obj.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            finish_reason = choices[0].get("finish_reason")
+            if isinstance(finish_reason, str) and finish_reason:
+                metadata["finish_reason"] = finish_reason
 
-        if data or usage or spec_decode_stats:
+        if data or usage or spec_decode_stats or metadata:
             return ParsedResponse(
                 perf_ns=perf_ns,
                 data=data,
                 usage=usage,
+                metadata=metadata,
                 spec_decode_stats=spec_decode_stats,
             )
 

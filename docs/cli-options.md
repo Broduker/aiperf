@@ -613,6 +613,11 @@ Use server-reported token counts from API usage fields instead of client-side to
 Request per-chunk token usage on streaming responses by setting stream_options.continuous_usage_stats, so the server reports cumulative usage on every chunk instead of only the final one. This lets inter-token latency subtract the first content chunk's real token count (fixing TPS/user inflation when a server bundles multiple tokens into the first streamed chunk). Requires a server that supports continuous_usage_stats (e.g. vLLM, TRT-LLM); strict OpenAI rejects it. Requires --use-server-token-count.
 <br/>_Flag (no value required)_
 
+#### `--allow-empty-response-content`
+
+Accept successful responses with protocol metadata or server-reported usage but no assistant content. Intended for simulation endpoints; content-based metrics such as TTFT and ITL remain unavailable.
+<br/>_Flag (no value required)_
+
 #### `--connection-reuse-strategy` `<str>`
 
 Transport connection reuse strategy. 'pooled' (default): connections are pooled and reused across all requests. 'never': new connection for each request, closed after response. 'sticky-user-sessions': connection persists across turns of a multi-turn conversation, closed on final turn (enables sticky load balancing).
@@ -2248,6 +2253,11 @@ Use server-reported token counts from API usage fields instead of client-side to
 Request per-chunk token usage on streaming responses by setting stream_options.continuous_usage_stats, so the server reports cumulative usage on every chunk instead of only the final one. This lets inter-token latency subtract the first content chunk's real token count (fixing TPS/user inflation when a server bundles multiple tokens into the first streamed chunk). Requires a server that supports continuous_usage_stats (e.g. vLLM, TRT-LLM); strict OpenAI rejects it. Requires --use-server-token-count.
 <br/>_Flag (no value required)_
 
+#### `--allow-empty-response-content`
+
+Accept successful responses with protocol metadata or server-reported usage but no assistant content. Intended for simulation endpoints; content-based metrics such as TTFT and ITL remain unavailable.
+<br/>_Flag (no value required)_
+
 #### `--connection-reuse-strategy` `<str>`
 
 Transport connection reuse strategy. 'pooled' (default): connections are pooled and reused across all requests. 'never': new connection for each request, closed after response. 'sticky-user-sessions': connection persists across turns of a multi-turn conversation, closed on final turn (enables sticky load balancing).
@@ -3876,6 +3886,11 @@ Use server-reported token counts from API usage fields instead of client-side to
 #### `--per-chunk-usage`
 
 Request per-chunk token usage on streaming responses by setting stream_options.continuous_usage_stats, so the server reports cumulative usage on every chunk instead of only the final one. This lets inter-token latency subtract the first content chunk's real token count (fixing TPS/user inflation when a server bundles multiple tokens into the first streamed chunk). Requires a server that supports continuous_usage_stats (e.g. vLLM, TRT-LLM); strict OpenAI rejects it. Requires --use-server-token-count.
+<br/>_Flag (no value required)_
+
+#### `--allow-empty-response-content`
+
+Accept successful responses with protocol metadata or server-reported usage but no assistant content. Intended for simulation endpoints; content-based metrics such as TTFT and ITL remain unavailable.
 <br/>_Flag (no value required)_
 
 #### `--connection-reuse-strategy` `<str>`
@@ -6013,6 +6028,11 @@ Use server-reported token counts from API usage fields instead of client-side to
 #### `--per-chunk-usage`
 
 Request per-chunk token usage on streaming responses by setting stream_options.continuous_usage_stats, so the server reports cumulative usage on every chunk instead of only the final one. This lets inter-token latency subtract the first content chunk's real token count (fixing TPS/user inflation when a server bundles multiple tokens into the first streamed chunk). Requires a server that supports continuous_usage_stats (e.g. vLLM, TRT-LLM); strict OpenAI rejects it. Requires --use-server-token-count.
+<br/>_Flag (no value required)_
+
+#### `--allow-empty-response-content`
+
+Accept successful responses with protocol metadata or server-reported usage but no assistant content. Intended for simulation endpoints; content-based metrics such as TTFT and ITL remain unavailable.
 <br/>_Flag (no value required)_
 
 #### `--connection-reuse-strategy` `<str>`

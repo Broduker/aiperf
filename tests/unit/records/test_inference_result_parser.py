@@ -160,6 +160,59 @@ class TestInvalidRecords:
         assert result.token_counts.input == 8
         assert result.responses == []
 
+    async def test_empty_content_with_completion_evidence_is_allowed(
+        self, inference_result_parser, mock_tokenizer, sample_turn
+    ):
+        record = RequestRecord(
+            request_info=create_test_request_info(
+                turns=[sample_turn], allow_empty_response_content=True
+            ),
+            model_name="test-model",
+        )
+        record.start_perf_ns = 1000
+        record.responses = [TextResponse(perf_ns=2000, text="ignored")]
+        inference_result_parser.get_tokenizer = AsyncMock(return_value=mock_tokenizer)
+        inference_result_parser.endpoint.extract_response_data = MagicMock(
+            return_value=[
+                ParsedResponse(
+                    perf_ns=2000,
+                    data=None,
+                    usage=Usage(
+                        prompt_tokens=8,
+                        completion_tokens=0,
+                        total_tokens=8,
+                    ),
+                    metadata={"finish_reason": "stop"},
+                )
+            ]
+        )
+
+        result = await inference_result_parser.parse_request_record(record)
+
+        assert not record.has_error
+        assert result.responses[0].data is None
+
+    async def test_empty_content_without_completion_evidence_is_rejected(
+        self, inference_result_parser, mock_tokenizer, sample_turn
+    ):
+        record = RequestRecord(
+            request_info=create_test_request_info(
+                turns=[sample_turn], allow_empty_response_content=True
+            ),
+            model_name="test-model",
+        )
+        record.start_perf_ns = 1000
+        record.responses = [TextResponse(perf_ns=2000, text="ignored")]
+        inference_result_parser.get_tokenizer = AsyncMock(return_value=mock_tokenizer)
+        inference_result_parser.endpoint.extract_response_data = MagicMock(
+            return_value=[ParsedResponse(perf_ns=2000, data=None)]
+        )
+
+        result = await inference_result_parser.parse_request_record(record)
+
+        assert record.has_error
+        assert result.responses == []
+
     async def test_existing_errors_not_overwritten(
         self, setup_inference_parser, sample_turn
     ):
