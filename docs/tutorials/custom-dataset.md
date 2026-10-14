@@ -67,6 +67,34 @@ Use single_turn when you need **deterministic, sequential execution** where requ
 **Execution:** Sequential by default (request 1, then 2, then 3, etc.)
 **Input:** Single JSONL file only
 
+### Large-file streaming load
+
+For a path-backed `single_turn` JSONL file that is too large to materialize as a
+Python dataset, enable the dataset-level streaming loader:
+
+```yaml
+benchmark:
+  dataset:
+    type: file
+    format: single_turn
+    path: /data/prompts.jsonl
+    sampling: sequential
+    streaming: true
+    streaming_batch_size: 256
+```
+
+`streaming: true` parses records incrementally and writes bounded batches into
+the mmap backing store. The full prompt and media payloads are not retained in
+the DatasetManager's Python conversation list. The timing service still receives
+conversation metadata for scheduling, so this mode is intended for independent
+single-turn records and does not eliminate metadata or mmap index storage.
+
+The mode requires a path-backed `single_turn` dataset with sequential sampling.
+Records that share a `session_id` must be contiguous; a session ID that reappears
+after another session is rejected. It is not a replacement for trace replay,
+random sampling, or multi-turn datasets. `streaming_batch_size` controls the
+bounded write batch and defaults to 256.
+
 ### Basic Text Example
 
 <!-- aiperf-run-vllm-default-openai-endpoint-server -->

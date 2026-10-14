@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -47,7 +48,43 @@ class CustomDatasetComposer(BaseDatasetComposer):
         Returns:
             list[Conversation]: A list of conversation objects.
         """
-        # TODO: (future) for K8s, we need to transfer file data from SC (across node)
+        self._prepare_loader()
+        dataset = self.loader.load_dataset()
+        conversations = self.loader.convert_to_conversations(dataset)
+
+        # Finalize all turns with metadata (custom datasets need this)
+        for conversation in conversations:
+            for turn in conversation.turns:
+                self._finalize_turn(turn)
+
+        # Finalize conversation-level context prompts
+        self._finalize_conversations(conversations)
+        return conversations
+
+    def iter_conversations(self) -> Iterator[Conversation]:
+        """Yield path-backed single-turn conversations with bounded memory."""
+        dataset_type = self._prepare_loader()
+        if self._inline_records is not None:
+            raise ValueError(
+                "streaming datasets require a file path, not inline records"
+            )
+        if dataset_type != CustomDatasetType.SINGLE_TURN:
+            raise ValueError(
+                "streaming datasets currently support only the single_turn format"
+            )
+        if not hasattr(self.loader, "iter_conversations"):
+            raise ValueError(
+                f"Loader {type(self.loader).__name__} does not support streaming"
+            )
+        for conversation in self.loader.iter_conversations():
+            for turn in conversation.turns:
+                self._finalize_turn(turn)
+            self._finalize_conversations([conversation])
+            yield conversation
+
+    def _prepare_loader(self) -> CustomDatasetType:
+        """Resolve the dataset type and create its loader instance."""
+        # TODO: for K8s, transfer source files from the shared storage class across nodes.
         is_inline = self._inline_records is not None
         if not is_inline:
             check_file_exists(Path(self._file_path))
@@ -86,17 +123,7 @@ class CustomDatasetComposer(BaseDatasetComposer):
 
         self.detected_dataset_type = dataset_type
         self._create_loader_instance(dataset_type)
-        dataset = self.loader.load_dataset()
-        conversations = self.loader.convert_to_conversations(dataset)
-
-        # Finalize all turns with metadata (custom datasets need this)
-        for conversation in conversations:
-            for turn in conversation.turns:
-                self._finalize_turn(turn)
-
-        # Finalize conversation-level context prompts
-        self._finalize_conversations(conversations)
-        return conversations
+        return dataset_type
 
     def get_default_context_mode(self) -> ConversationContextMode | None:
         """Delegate to the loader's format-specific default, if a loader was created."""

@@ -42,6 +42,19 @@ class TestFileDatasetSourceXOR:
             FileDataset.model_validate(_base())
         assert "exactly one source" in str(exc.value)
 
+    def test_streaming_requires_sequential_path_dataset(self, tmp_path):
+        f = tmp_path / "x.jsonl"
+        f.write_text('{"text": "hi"}\n')
+        dataset = FileDataset.model_validate(_base(path=str(f), streaming=True))
+        assert dataset.streaming is True
+        assert dataset.streaming_batch_size == 256
+
+    def test_streaming_rejects_inline_records(self):
+        with pytest.raises(ValidationError, match="path-backed"):
+            FileDataset.model_validate(
+                _base(records=[{"text": "hello"}], streaming=True)
+            )
+
 
 class TestFileDatasetRecordsShape:
     def test_records_flat_list_for_single_turn(self):

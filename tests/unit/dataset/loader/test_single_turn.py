@@ -203,6 +203,44 @@ class TestSingleTurnDatasetLoader:
         assert turn2[0].image == "https://example.com/image.png"
         assert turn2[0].audio is None
 
+    def test_iter_conversations_streams_records(self, create_jsonl_file, default_cfg):
+        """Streaming iteration yields one conversation per record without a dataset dict."""
+        filename = create_jsonl_file(
+            ['{"text": "first"}', '{"text": "second"}', '{"text": "third"}']
+        )
+        loader = SingleTurnDatasetLoader(
+            filename=filename, run=make_run_from_cli(default_cfg)
+        )
+
+        conversations = list(loader.iter_conversations())
+
+        assert [
+            conversation.turns[0].texts[0].contents for conversation in conversations
+        ] == [
+            ["first"],
+            ["second"],
+            ["third"],
+        ]
+        assert len({conversation.session_id for conversation in conversations}) == 3
+
+    def test_iter_conversations_rejects_non_contiguous_session(
+        self, create_jsonl_file, default_cfg
+    ):
+        """Streaming mode rejects a session that reappears after another session."""
+        filename = create_jsonl_file(
+            [
+                '{"session_id": "a", "text": "first"}',
+                '{"session_id": "b", "text": "second"}',
+                '{"session_id": "a", "text": "third"}',
+            ]
+        )
+        loader = SingleTurnDatasetLoader(
+            filename=filename, run=make_run_from_cli(default_cfg)
+        )
+
+        with pytest.raises(ValueError, match="contiguous session_id"):
+            list(loader.iter_conversations())
+
     def test_load_dataset_skips_empty_lines(self, create_jsonl_file, default_cfg):
         """Test that empty lines are skipped."""
         content = [

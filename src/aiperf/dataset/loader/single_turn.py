@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +148,35 @@ class SingleTurnDatasetLoader(BaseFileLoader, MediaConversionMixin):
                 self._dedup_repeated_images_inplace(conversation)
             conversations.append(conversation)
         return conversations
+
+    def iter_conversations(self) -> Iterator[Conversation]:
+        """Yield conversations without materializing the complete input file.
+
+        Streaming is intentionally limited to contiguous session records. The
+        common single-turn case generates a new session ID per record, while
+        adjacent records with an explicit session ID remain one conversation.
+        Non-contiguous session IDs are rejected rather than silently changing
+        their turn ordering.
+        """
+        current_id: str | None = None
+        current_turns: list[SingleTurn] = []
+        closed_ids: set[str] = set()
+        for record_dict in self._iter_record_dicts():
+            single_turn = SingleTurn.model_validate(record_dict)
+            session_id = single_turn.session_id or self.session_id_generator.next()
+            if current_id is not None and session_id != current_id:
+                closed_ids.add(current_id)
+                yield self.convert_to_conversations({current_id: current_turns})[0]
+                current_turns = []
+            if session_id in closed_ids:
+                raise ValueError(
+                    f"Streaming single_turn dataset requires contiguous session_id "
+                    f"records; session_id {session_id!r} reappeared after it closed."
+                )
+            current_id = session_id
+            current_turns.append(single_turn)
+        if current_id is not None:
+            yield self.convert_to_conversations({current_id: current_turns})[0]
 
     @staticmethod
     def _dedup_repeated_images_inplace(conversation: Conversation) -> None:

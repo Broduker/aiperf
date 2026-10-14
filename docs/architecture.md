@@ -31,6 +31,20 @@ AIPerf is designed as a modular, extensible benchmarking framework that separate
 5. **Processing**: Record Processors compute metrics in parallel
 6. **Aggregation**: Records Manager collects and exports results
 
+### Large File Dataset Loading
+
+Path-backed `single_turn` datasets can opt into bounded streaming preparation
+with `streaming: true`. The Dataset Manager parses one conversation at a time,
+holds at most `streaming_batch_size` conversations, and appends each batch to
+the mmap backing store. Workers retain the existing mmap client and credit flow;
+the feature changes dataset preparation rather than request scheduling.
+
+The timing plane still receives conversation metadata and the backing store
+still creates an index for random access. Therefore streaming removes large
+prompt and media payloads from the Dataset Manager's Python object graph, but it
+does not eliminate metadata or index storage. Streaming requires sequential
+sampling and is currently limited to independent single-turn records.
+
 
 ## Core Components
 

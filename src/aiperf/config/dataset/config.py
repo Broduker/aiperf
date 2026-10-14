@@ -366,6 +366,31 @@ class FileDataset(SystemPromptMixin):
         ),
     ]
 
+    streaming: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "Stream a single_turn JSONL file into the dataset backing store "
+                "with bounded memory. This mode is only supported for path-backed "
+                "single_turn datasets and requires sequential sampling."
+            ),
+        ),
+    ]
+
+    streaming_batch_size: Annotated[
+        int,
+        Field(
+            ge=1,
+            default=256,
+            description=(
+                "Number of conversations held while a streaming file dataset is "
+                "written to the backing store. Larger values improve throughput "
+                "but increase preparation memory."
+            ),
+        ),
+    ]
+
     synthesis: Annotated[
         SynthesisConfig | None,
         Field(
@@ -749,6 +774,21 @@ class FileDataset(SystemPromptMixin):
         if records_set and isinstance(self.records, list) and not self.records:
             raise ValueError("`records:` must contain at least one record.")
 
+        return self
+
+    @model_validator(mode="after")
+    def _validate_streaming_source(self) -> FileDataset:
+        """Validate options that must be known before streaming starts."""
+        if not self.streaming:
+            return self
+        if self.path is None:
+            raise ValueError("streaming datasets require a path-backed FileDataset")
+        if self.sampling != DatasetSamplingStrategy.SEQUENTIAL:
+            raise ValueError("streaming datasets require sampling='sequential'")
+        if self.format != DatasetFormat.SINGLE_TURN:
+            raise ValueError(
+                "streaming datasets currently support only format: single_turn"
+            )
         return self
 
     _HASH_ID_TRACE_FORMATS: ClassVar[frozenset[DatasetFormat]] = frozenset(

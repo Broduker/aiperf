@@ -114,6 +114,27 @@ The `benchmark` section mirrors the standard AIPerf YAML config. Any field you u
 | `datasets` | list | Named dataset configurations (each entry has a `name`) |
 | `phases` | list | Ordered load phases (warmup, profiling, etc.), each with a `name` |
 
+For large path-backed `single_turn` JSONL files, enable bounded dataset loading
+inside the benchmark Pod:
+
+```yaml
+datasets:
+  - name: class1
+    type: file
+    format: single_turn
+    path: /data/nbg/class1.jsonl
+    sampling: sequential
+    streaming: true
+    streamingBatchSize: 256
+```
+
+This writes records incrementally to AIPerf's mmap backing store instead of
+materializing all prompt payloads in the DatasetManager. The option requires
+sequential sampling and independent single-turn records. It does not create
+child Kubernetes Jobs or AIPerfSweep variations; one `AIPerfJob` still owns the
+full run. Conversation metadata and the mmap index remain in memory/on disk for
+scheduling and random access.
+
 See the [YAML Config Reference](../tutorials/yaml-config.md) for the complete set of benchmark fields.
 
 > **Shorthand siblings.** The apiserver also accepts the singular shortcuts

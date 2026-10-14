@@ -44,6 +44,7 @@ from aiperf.common.messages import (
 from aiperf.common.mixins import ReplyClientMixin
 from aiperf.common.models import (
     Conversation,
+    ConversationMetadata,
     DatasetClientMetadata,
     DatasetMetadata,
     InputsFile,
@@ -62,6 +63,7 @@ from aiperf.plugin.enums import (
     ComposerType,
     CustomDatasetType,
     DatasetBackingStoreType,
+    DatasetSamplingStrategy,
     PhaseType,
     PluginType,
     ServiceRunType,
@@ -317,7 +319,9 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
             else None
         )
         return (
-            self._detected_dataset_type == CustomDatasetType.BASETEN_TRACE
+            isinstance(default_dataset, FileDataset)
+            and default_dataset.streaming
+            or self._detected_dataset_type == CustomDatasetType.BASETEN_TRACE
             or mmap_cache.is_trace_or_verbatim_dataset(
                 self._detected_dataset_type, public_dataset
             )
@@ -947,6 +951,10 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         accuracy_enabled = accuracy_cfg.enabled if accuracy_cfg else False
         default_dataset = self.run.cfg.get_default_dataset()
 
+        if isinstance(default_dataset, FileDataset) and default_dataset.streaming:
+            await self._configure_streaming_file_dataset(default_dataset)
+            return
+
         if accuracy_enabled:
             conversations = await self._load_accuracy_dataset()
         elif isinstance(default_dataset, PublicDataset):
@@ -1034,6 +1042,82 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         # Note: dataset_configured event is set in _configure_dataset_client_and_free_memory()
         # after the dataset client is initialized, to avoid a race condition where fallback
         # requests arrive before the client is ready.
+        notification = DatasetConfiguredNotification(
+            service_id=self.service_id,
+            metadata=self.dataset_metadata,
+            client_metadata=client_metadata,
+            benchmark_generation=self.run.benchmark_id,
+            dataset_generation=_dataset_generation_of(client_metadata),
+        )
+        self._last_dataset_configured_notification = notification
+        await self.publish(notification)
+        self._start_dataset_rebroadcast(notification)
+
+    async def _configure_streaming_file_dataset(
+        self, dataset_config: FileDataset
+    ) -> None:
+        """Load a single-turn file into mmap storage without retaining full conversations."""
+        from aiperf.dataset.composer.custom import CustomDatasetComposer
+
+        if dataset_config.records is not None or dataset_config.path is None:
+            raise ValueError("streaming datasets require a path-backed FileDataset")
+        if dataset_config.sampling != DatasetSamplingStrategy.SEQUENTIAL:
+            raise ValueError(
+                "streaming datasets require sampling='sequential' because the "
+                "source is consumed in file order"
+            )
+
+        composer = CustomDatasetComposer(run=self.run, tokenizer=self.tokenizer)
+        conversation_iter = composer.iter_conversations()
+        BackingStoreClass = plugins.get_class(
+            PluginType.DATASET_BACKING_STORE, DatasetBackingStoreType.MEMORY_MAP
+        )
+        self._backing_store = BackingStoreClass(
+            benchmark_id=self.run.benchmark_id,
+            compress_only=self._compress_only,
+            format=MemoryMapFormat.CONVERSATION,
+        )
+        await self._backing_store.initialize()
+
+        metadata: list[ConversationMetadata] = []
+        conversation_count = 0
+        turn_count = 0
+
+        def read_batch() -> list[Conversation]:
+            """Parse one bounded batch off the DatasetManager event loop."""
+            batch: list[Conversation] = []
+            try:
+                for _ in range(dataset_config.streaming_batch_size):
+                    batch.append(next(conversation_iter))
+            except StopIteration:
+                pass
+            return batch
+
+        while batch := await asyncio.to_thread(read_batch):
+            conversations = {
+                conversation.session_id: conversation for conversation in batch
+            }
+            await self._backing_store.add_conversations(conversations)
+            metadata.extend(conversation.metadata() for conversation in batch)
+            conversation_count += len(batch)
+            turn_count += sum(len(conversation.turns) for conversation in batch)
+        if not metadata:
+            raise ValueError("streaming dataset contains no valid conversations")
+        await self._backing_store.finalize()
+
+        self._default_context_mode = composer.get_default_context_mode()
+        self._detected_dataset_type = composer.detected_dataset_type
+
+        client_metadata = self._backing_store.get_client_metadata()
+        self.dataset_metadata = DatasetMetadata(
+            conversations=metadata,
+            sampling_strategy=dataset_config.sampling,
+            default_context_mode=self._default_context_mode,
+        )
+        self.info(
+            f"Streaming dataset configured: conversations={conversation_count}, "
+            f"turns={turn_count}, batch_size={dataset_config.streaming_batch_size}"
+        )
         notification = DatasetConfiguredNotification(
             service_id=self.service_id,
             metadata=self.dataset_metadata,
