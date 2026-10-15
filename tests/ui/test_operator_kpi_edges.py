@@ -109,6 +109,16 @@ def test_realtime_grid_formats_negative_numbers_but_rejects_nan_and_infinity() -
     assert "isFinite(reqVal)" in reliability
 
 
+def test_realtime_grid_uses_canonical_request_error_rate_metric() -> None:
+    source = _source(REALTIME_GRID)
+    reliability = _function_body(source, "ReliabilityTile")
+
+    assert "summary['request_error_rate']" in reliability
+    assert "summary['completed_request_count']" in reliability
+    assert "errorRatePercent / 100" in reliability
+    assert "summary['error_rate']" not in reliability
+
+
 def test_kpi_card_value_and_progress_sanitize_nan_without_hiding_negative_numbers() -> (
     None
 ):

@@ -115,8 +115,8 @@ function pickMetric(summary, spec) {
 /**
  * Read a finite number from a summary entry that may be either a bare scalar
  * or a `{avg, p50, ...}` stat struct. `status.summary` carries both shapes:
- * metric tags are structs, while `total_requests` and `error_rate` are
- * top-level scalars bolted on by `_derived_scalars`
+ * metric tags are structs, while `total_requests` and the legacy `error_rate`
+ * are top-level scalars bolted on by `_derived_scalars`
  * (src/aiperf/kubernetes/crd_models.py). Returns null, never 0, when
  * the value is missing or non-finite -- absent is not zero.
  */
@@ -271,7 +271,7 @@ function KpiTile({ spec, metric, slos, series }) {
 }
 
 /** Composite goodput / success-rate tile. Goodput when SLOs are declared,
- *  Success Rate (1 - error_rate) otherwise. */
+ *  Success Rate (1 - request_error_rate / 100) otherwise. */
 function ReliabilityTile({ summary, slos, timeseries }) {
   const ts = timeseries ?? {};
   const hasSlo = slos && Object.keys(slos).length > 0;
@@ -344,34 +344,36 @@ function ReliabilityTile({ summary, slos, timeseries }) {
     `;
   }
 
-  // No SLOs declared → Success Rate from error_rate / error_request_count.
-  const errorRate = summary['error_rate'];
+  // No SLOs declared → Success Rate from the canonical request_error_rate
+  // metric. Its unit is percent; completed_request_count supplies the
+  // denominator when error_request_count is hidden from live display.
+  const errorRate = summary['request_error_rate'];
   const errorCount = summary['error_request_count'];
   const reqCount = summary['request_count'];
+  const completedCount = summary['completed_request_count'];
   const successVal = scalarOrAvg(reqCount);
-  const errVal = scalarOrAvg(errorCount) ?? 0;
-  // `request_count` counts *successful* requests only and
-  // `error_request_count` counts failures, so the population a rate is taken
-  // over is their sum -- see the derivation this summary comes from,
-  // src/aiperf/kubernetes/crd_models.py:361-366: "using request_count alone
-  // would undercount by every failed request". Dividing by `request_count`
-  // alone made the denominator shrink with every failure, so 3 errors against
-  // 1 success reported a 300% error rate; the `Math.max(0, ...)` below then
-  // silently floored the resulting -200% success rate at 0%. Prefer the
-  // authoritative `total_requests` scalar the same derivation emits.
-  const totalRequests = scalarOrAvg(summary['total_requests'])
-    ?? (successVal != null ? successVal + errVal : null);
-  const rate = (typeof errorRate === 'number' ? errorRate * 100 : null)
-    ?? (errorRate?.avg != null ? errorRate.avg * 100 : null)
-    ?? (totalRequests != null && totalRequests > 0
+  const errorRatePercent = scalarOrAvg(errorRate);
+  const errorValFromMetric = scalarOrAvg(errorCount);
+  const completedVal = scalarOrAvg(completedCount);
+  const errVal = errorValFromMetric
+    ?? (errorRatePercent != null && completedVal != null
+        ? Math.round(completedVal * errorRatePercent / 100)
+        : null);
+  const totalRequests = completedVal
+    ?? (successVal != null && errVal != null ? successVal + errVal : null);
+  const rate = errorRatePercent
+    ?? (totalRequests != null && totalRequests > 0 && errVal != null
         ? (errVal / totalRequests) * 100
         : null);
   if (rate == null || !isFinite(rate)) return null;
   const success = Math.max(0, 100 - rate);
-  const kind = errVal === 0 ? 'good' : 'warn';
-  // Sparkline: error_rate trend (lower is better) — fall back to
-  // error_request_count if error_rate isn't streamed.
-  const errorRateSeries = pluck(ts['error_rate'], 'avg');
+  const kind = rate === 0 ? 'good' : 'warn';
+  const errorLabel = errVal != null
+    ? fmtInt(errVal) + ' errors'
+    : fmtNumber(rate, 2) + '% error rate';
+  // Sparkline: request_error_rate trend (lower is better) — fall back to
+  // error_request_count if request_error_rate isn't streamed.
+  const errorRateSeries = pluck(ts['request_error_rate'], 'avg');
   const sparkPoints = errorRateSeries.length > 0
     ? errorRateSeries
     : pluck(ts['error_request_count'], 'avg');
@@ -387,7 +389,7 @@ function ReliabilityTile({ summary, slos, timeseries }) {
         </div>
         <span class=${'kpi-chip kpi-chip--' + kind}>
           ${kind === 'good' ? '✓' : '✗'}
-          <span class="kpi-chip-thresh">${kind === 'good' ? '0 errors' : fmtInt(errVal) + ' errors'}</span>
+          <span class="kpi-chip-thresh">${kind === 'good' ? '0 errors' : errorLabel}</span>
         </span>
       </div>
       <div class="kpi-big">
@@ -398,8 +400,8 @@ function ReliabilityTile({ summary, slos, timeseries }) {
       <div class="kpi-tile-sub">
         <span>errors</span>
         <span class="kpi-tile-sub-val">${totalRequests != null
-          ? fmtInt(errVal) + ' of ' + fmtInt(totalRequests)
-          : fmtInt(errVal)}</span>
+          ? fmtInt(errVal ?? 0) + ' of ' + fmtInt(totalRequests)
+          : errorLabel}</span>
       </div>
     </div>
   `;
@@ -420,7 +422,7 @@ export function RealtimeKpiGrid({ summary, slos, timeseries }) {
   const hasReliability =
     summary?.['goodput'] != null
     || summary?.['good_request_count'] != null
-    || summary?.['error_rate'] != null
+    || summary?.['request_error_rate'] != null
     || (summary?.['request_count'] != null && summary?.['error_request_count'] != null);
   if (!hasHero && !hasReliability) return null;
 
