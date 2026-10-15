@@ -1,16 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+import asyncio
+import hashlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import zmq.asyncio
 
+from aiperf.common.enums import MessageType
 from aiperf.common.environment import Environment
 from aiperf.common.exceptions import CommunicationError
 from aiperf.common.hooks import background_task, on_stop
 from aiperf.common.messages import Message
 from aiperf.common.types import MessageTypeT
 from aiperf.common.utils import call_all_functions
+from aiperf.zmq.dataset_codec import decode_message
 from aiperf.zmq.fd_reader import FdEdgeReader
 from aiperf.zmq.zmq_base_client import BaseZMQClient
 from aiperf.zmq.zmq_defaults import (
@@ -79,6 +83,8 @@ class ZMQSubClient(BaseZMQClient):
         self._msg_count: int = 0
         self._yield_interval: int = Environment.ZMQ.SUB_YIELD_INTERVAL
         self._fd_reader: FdEdgeReader | None = None
+        self._dataset_notification_lock = asyncio.Lock()
+        self._dataset_notification_digest: bytes | None = None
 
     async def subscribe_all(
         self,
@@ -135,7 +141,9 @@ class ZMQSubClient(BaseZMQClient):
                 )
             else:
                 self.debug(
-                    lambda: f"Adding callback to existing subscription for topic: {topic}"
+                    lambda: (
+                        f"Adding callback to existing subscription for topic: {topic}"
+                    )
                 )
 
             self._subscribers.setdefault(topic, []).append(callback)
@@ -171,6 +179,21 @@ class ZMQSubClient(BaseZMQClient):
     async def _handle_message(self, topic_bytes: bytes, message_bytes: bytes) -> None:
         """Handle a message from a subscribed message_type."""
 
+        if topic_bytes == (
+            MessageType.DATASET_CONFIGURED_NOTIFICATION.encode() + TOPIC_END_ENCODED
+        ):
+            async with self._dataset_notification_lock:
+                digest = await asyncio.to_thread(hashlib.sha256, message_bytes)
+                if digest.digest() == self._dataset_notification_digest:
+                    return
+                if await self._deliver_message(topic_bytes, message_bytes):
+                    self._dataset_notification_digest = digest.digest()
+            return
+        await self._deliver_message(topic_bytes, message_bytes)
+
+    async def _deliver_message(self, topic_bytes: bytes, message_bytes: bytes) -> bool:
+        """Decode and deliver once, retaining failed deliveries for retry."""
+
         # strip the final TOPIC_END chars from the topic
         topic = topic_bytes.decode()[:-TOPIC_END_LENGTH]
         self.trace(
@@ -179,26 +202,32 @@ class ZMQSubClient(BaseZMQClient):
 
         # Use AUTO-LOOKUP for all messages - single parse with multi-level routing
         # This is optimal for our workload (84% large messages in push/pull, 45% in pub/sub)
-        message = Message.from_json(message_bytes)
+        message = await decode_message(message_bytes)
 
         self.trace(
-            lambda: f"Calling callbacks for message: {message}, {self._subscribers.get(topic)}"
+            lambda: (
+                f"Calling callbacks for message: {message}, {self._subscribers.get(topic)}"
+            )
         )
 
         # Call callbacks with the parsed message object
+        succeeded = True
         if topic in self._subscribers:
             try:
                 await call_all_functions(self._subscribers[topic], message)
             except Exception:
+                succeeded = False
                 self.exception(f"Error in subscription handler for topic {topic}")
 
         if self._wildcard_subscriber is not None:
             try:
                 await self._wildcard_subscriber(message)
             except Exception:
+                succeeded = False
                 self.exception(
                     f"Error in wildcard subscription handler for topic {topic}"
                 )
+        return succeeded
 
     def _recv_one_sub(self) -> tuple[bytes, bytes]:
         """Synchronous NOBLOCK multipart recv for the FD-reader drain.

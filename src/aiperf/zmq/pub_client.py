@@ -7,6 +7,7 @@ import zmq.asyncio
 
 from aiperf.common.exceptions import CommunicationError
 from aiperf.common.messages import Message, TargetedServiceMessage
+from aiperf.zmq.dataset_codec import encode_message
 from aiperf.zmq.zmq_base_client import BaseZMQClient
 from aiperf.zmq.zmq_defaults import TOPIC_DELIMITER, TOPIC_END
 
@@ -74,7 +75,7 @@ class ZMQPubClient(BaseZMQClient):
 
         try:
             topic = self._determine_topic(message)
-            message_json_bytes = message.to_json_bytes()
+            message_json_bytes = await encode_message(message)
 
             # Publish message
             self.trace(lambda: f"Publishing message {topic=} {message_json_bytes=}")

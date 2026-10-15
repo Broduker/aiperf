@@ -12,6 +12,7 @@ from aiperf.common.messages import ErrorMessage, Message
 from aiperf.common.models import ErrorDetails
 from aiperf.common.types import MessageTypeT
 from aiperf.common.utils import yield_to_event_loop
+from aiperf.zmq.dataset_codec import encode_message
 from aiperf.zmq.zmq_base_client import BaseZMQClient
 
 
@@ -225,7 +226,7 @@ class ZMQRouterReplyClient(BaseZMQClient):
 
             # Send the response back to the client.
             await self.socket.send_multipart(
-                [*routing_envelope, response.to_json_bytes()]
+                [*routing_envelope, await encode_message(response)]
             )
         except Exception as e:
             self.exception(

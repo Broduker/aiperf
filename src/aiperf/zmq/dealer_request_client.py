@@ -13,6 +13,7 @@ from aiperf.common.hooks import background_task, on_stop
 from aiperf.common.messages import Message
 from aiperf.common.mixins import TaskManagerMixin
 from aiperf.common.utils import yield_to_event_loop
+from aiperf.zmq.dataset_codec import decode_message
 from aiperf.zmq.zmq_base_client import BaseZMQClient
 
 
@@ -69,7 +70,7 @@ class ZMQDealerRequestClient(BaseZMQClient, TaskManagerMixin):
                 message_bytes = await self.socket.recv()
                 if self.is_trace_enabled:
                     self.trace(f"Received response: {message_bytes}")
-                response_message = Message.from_json(message_bytes)
+                response_message = await decode_message(message_bytes)
 
                 # Call the callback if it exists
                 if response_message.request_id in self.request_callbacks:

@@ -45,6 +45,16 @@ prompt and media payloads from the Dataset Manager's Python object graph, but it
 does not eliminate metadata or index storage. Streaming requires sequential
 sampling and is currently limited to independent single-turn records.
 
+Dataset configuration uses sparse conversation metadata on the message bus:
+default-valued fields are omitted and restored by the existing model defaults.
+Publishers serialize and subscribers validate conversation metadata in bounded
+batches, yielding between batches so registration and heartbeat tasks remain
+responsive. The late-join request/reply path uses the same codec. Subscribers
+serialize concurrent configuration deliveries and skip byte-identical broadcasts
+after successful delivery; a changed payload is always decoded and delivered.
+This bounds individual encoding/validation pauses, while the complete scheduling
+metadata and mmap index still scale with the number of conversations.
+
 
 ## Core Components
 
