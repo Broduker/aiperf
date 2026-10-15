@@ -55,6 +55,12 @@ after successful delivery; a changed payload is always decoded and delivered.
 This bounds individual encoding/validation pauses, while the complete scheduling
 metadata and mmap index still scale with the number of conversations.
 
+Worker mmap initialization runs in a thread so index parsing and optional page
+prefaulting do not block service heartbeats. Dataset-ready messages may arrive
+over both the pod-local lifecycle channel and PUB/SUB; the worker serializes
+initialization and reuses an already-open client when both notifications name
+the same data and index paths.
+
 
 ## Core Components
 

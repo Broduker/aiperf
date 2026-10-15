@@ -751,6 +751,8 @@ class Worker(BaseComponentService, ProcessHealthMixin):
         # Dataset client for direct data access (eliminates DatasetManager bottleneck)
         # Initialized when DatasetConfiguredNotification is received via factory
         self._dataset_client: DatasetClientStoreProtocol | None = None
+        self._dataset_client_key: tuple[str, ...] | None = None
+        self._dataset_client_lock = asyncio.Lock()
         self._dataset_configured_event = asyncio.Event()
 
         # Dispatchability gate. The worker announces WorkerConnected as soon as
@@ -1227,28 +1229,61 @@ class Worker(BaseComponentService, ProcessHealthMixin):
                 :class:`asyncio.Lock` is not reentrant, so leaving it True would
                 deadlock the worker's startup permanently.
         """
-        ClientStoreClass = plugins.get_class(
-            PluginType.DATASET_CLIENT_STORE, client_metadata.client_type
-        )
-        self._dataset_client = ClientStoreClass(client_metadata=client_metadata)
-        await self._dataset_client.initialize()
-        if isinstance(client_metadata, MemoryMapClientMetadata):
-            self._is_payload_bytes = (
-                client_metadata.format == MemoryMapFormat.PAYLOAD_BYTES
+        dataset_client_key = (
+            (
+                str(client_metadata.client_type),
+                str(client_metadata.data_file_path),
+                str(client_metadata.index_file_path),
+                str(client_metadata.format),
             )
-            if (
-                self._is_payload_bytes
-                and self.run.cfg.get_cache_bust_target() != CacheBustTarget.NONE
-            ):
-                raise RuntimeError(
-                    "cache-bust is incompatible with PAYLOAD_BYTES fast path; "
-                    "loader should have skipped preformat "
-                    "(see DatasetManager._preformat_payloads)"
-                )
-        self._dataset_configured_event.set()
-        self.debug(
-            lambda: f"Dataset client initialized: type={client_metadata.client_type}"
+            if isinstance(client_metadata, MemoryMapClientMetadata)
+            else None
         )
+        async with self._dataset_client_lock:
+            if not (
+                dataset_client_key is not None
+                and self._dataset_configured_event.is_set()
+                and dataset_client_key == self._dataset_client_key
+            ):
+                ClientStoreClass = plugins.get_class(
+                    PluginType.DATASET_CLIENT_STORE, client_metadata.client_type
+                )
+                dataset_client = ClientStoreClass(client_metadata=client_metadata)
+                try:
+                    await dataset_client.initialize()
+                    if isinstance(client_metadata, MemoryMapClientMetadata):
+                        is_payload_bytes = (
+                            client_metadata.format == MemoryMapFormat.PAYLOAD_BYTES
+                        )
+                        if (
+                            is_payload_bytes
+                            and self.run.cfg.get_cache_bust_target()
+                            != CacheBustTarget.NONE
+                        ):
+                            raise RuntimeError(
+                                "cache-bust is incompatible with PAYLOAD_BYTES fast path; "
+                                "loader should have skipped preformat "
+                                "(see DatasetManager._preformat_payloads)"
+                            )
+                except BaseException:
+                    await dataset_client.stop()
+                    raise
+
+                previous_client = self._dataset_client
+                self._dataset_client = dataset_client
+                self._dataset_client_key = dataset_client_key
+                self._is_payload_bytes = (
+                    isinstance(client_metadata, MemoryMapClientMetadata)
+                    and client_metadata.format == MemoryMapFormat.PAYLOAD_BYTES
+                )
+                if previous_client is not None:
+                    await previous_client.stop()
+                self._dataset_configured_event.set()
+                self.debug(
+                    lambda: (
+                        f"Dataset client initialized: type={client_metadata.client_type}"
+                    )
+                )
         # A worker in group-managed mode is held out of the routing pool until
         # a dataset is open. This is the broadcast path reaching that point;
         # the poll in _retry_group_dataset_state_until_ready is the fallback
@@ -2314,6 +2349,7 @@ class Worker(BaseComponentService, ProcessHealthMixin):
         if self._dataset_client is not None:
             dataset_client = self._dataset_client
             self._dataset_client = None
+            self._dataset_client_key = None
             await dataset_client.stop()
             self.debug("Dataset client stopped")
 
