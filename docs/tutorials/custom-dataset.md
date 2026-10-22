@@ -105,7 +105,7 @@ pass of pending samples; a smaller request/session cap or duration can stop it
 earlier. An all-cached input completes with zero requests. Adaptive discovery
 starts afresh; historical performance statistics are not merged into this run.
 
-The new artifact directory contains `result_cache/report.json` with scanned,
+The artifact directory contains `result_cache/report.json` with scanned,
 unique, duplicate, ignored, reused and pending counts, plus
 `result_cache/reused.jsonl` mapping reused IDs to historical file and line.
 Historical outputs stay in place and must be retained alongside new RAW output
@@ -113,6 +113,76 @@ for downstream synthesis merging. Paths must be readable by the dataset manager;
 on Kubernetes mount the history PVC there and create a new `AIPerfJob` with a new
 artifact directory. Freeze or stop an old writer before a final handover if
 duplicate work after the snapshot is unacceptable.
+
+### Continue writing a persistent result file
+
+Set `cache_dir` to keep complete successful responses in one durable JSONL file,
+similar to EvalScope prediction caching. It works on the first run without
+`resume_from`; subsequent runs reuse the same cache directory automatically:
+
+```yaml
+benchmark:
+  models: [my-model]
+  endpoint:
+    type: chat
+    urls: [http://localhost:8000/v1/chat/completions]
+  datasets:
+    - name: main
+      type: file
+      format: single_turn
+      path: /data/input.jsonl
+      sampling: sequential
+      cache_dir: /data/synthesis/cache
+      resume_from: [/data/previous-run]
+  phases:
+    - name: profiling
+      type: concurrency
+      concurrency: 32
+      requests: 1000000
+  artifacts:
+    dir: /data/synthesis/run
+    raw: true
+```
+
+`cache_dir/results.jsonl` contains complete successful **RAW records**, including
+request payloads and responses, from history and the current run. New successes
+are appended during periodic RAW flushes and at finalization; they do not wait
+for a manual merge. HTTP failures, empty answers and truncated generations are
+not cached. One record per `(session_id, request-body fingerprint)` is retained;
+changing a prompt or generation parameters creates a distinct result. Output is
+in completion/import order, not input order. This is an AIPerf RAW export, not
+the original dataset's business-specific output schema.
+
+When `resume_from` is supplied, successful history is streamed into this file.
+After import, history files are no longer needed for cached answers. Remove
+`resume_from` on later runs to avoid scanning them again. To cover an entire
+original dataset, supply its full converted input and import all earlier result
+directories, including successes excluded from an old `remaining.jsonl` snapshot.
+
+The artifact directory may also be reused in this mode. RAW processors use
+unique staging filenames so initialization cannot truncate historical inputs.
+Per-run reports and performance exports can be replaced; `cache_dir` holds the
+durable synthesis answers. Recovery reports remain preparation-time accounting,
+and historical performance statistics are not included in new-run metrics.
+
+The disk-backed SQLite index stores IDs, fingerprints and a byte checkpoint,
+never response bodies in memory. Restarts read this index rather than scanning
+all historical response text again. Appends are serialized with a file lock across
+record processors. After interruption, complete unindexed lines are recovered
+and an incomplete final line is removed before appending. Keep `results.jsonl`
+and its SQLite index together; a missing index can be rebuilt from the JSONL.
+Use a dedicated cache directory for each logical dataset. The filesystem must
+support cross-process file locking and SQLite transactions. Do not run two
+independent jobs against the same cache: they can both schedule the same pending
+sample even though successful output is deduplicated.
+
+On Kubernetes, `cache_dir` must be an absolute PVC path mounted at the same
+location in the dataset-manager and every record-processor pod, rather than the
+pod-local `/results` directory. Stop the old job and flush its records before
+handover, retain the PVC, then recreate the job with the same cache directory
+and the desired concurrency configuration. Deleting a Kubernetes job alone does
+not implement recovery. Finishing one pass also does not guarantee all samples
+succeeded: restart against the same cache to retry remaining failures.
 
 Each line represents one independent single-turn request.
 

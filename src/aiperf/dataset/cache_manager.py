@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 from collections.abc import Iterable, Iterator
+from contextlib import closing
 from io import BufferedReader
 from pathlib import Path
 from typing import Any, BinaryIO
 
 import orjson
 import zstandard
+from filelock import FileLock
 
 from aiperf.common.models import Conversation
 from aiperf.common.models.dataset_models import CacheReport, CacheSource
@@ -102,6 +105,18 @@ def _successful_payload(record: dict[str, Any]) -> dict[str, Any] | None:
     return payload
 
 
+def _record_identity(record: Any) -> tuple[str, str] | None:
+    if not isinstance(record, dict):
+        return None
+    payload = _successful_payload(record)
+    if payload is None:
+        return None
+    session_id = record["metadata"].get("conversation_id")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    return session_id, payload_fingerprint(payload)
+
+
 class CacheManager:
     """Index historical successes on disk and select pending conversations.
 
@@ -112,6 +127,7 @@ class CacheManager:
     def __init__(self, run: BenchmarkRun) -> None:
         self.run = run
         self.report = CacheReport()
+        self.cache_dir = run.cfg.get_default_dataset().cache_dir
         self.directory = run.cfg.artifacts.dir / "result_cache"
         self.directory.mkdir(parents=True, exist_ok=True)
         (self.directory / "reused.jsonl").write_bytes(b"")
@@ -157,11 +173,22 @@ class CacheManager:
                 raise ValueError(f"No RAW JSONL files found in resume_from: {source}")
             files.update(candidates)
         current = self.run.cfg.artifacts.dir.resolve()
+        results = (
+            self.cache_dir.resolve() / "results.jsonl"
+            if self.cache_dir is not None
+            else None
+        )
+        if results is not None:
+            if results == dataset.path.expanduser().resolve():
+                raise ValueError(
+                    "cache_dir results.jsonl must not be the input dataset"
+                )
+            self.append_results(results.parent, [])
+            files.discard(results)
         for path in sorted(files):
             if (
-                path.is_relative_to(current)
-                or path == dataset.path.expanduser().resolve()
-            ):
+                results is None and path.is_relative_to(current)
+            ) or path == dataset.path.expanduser().resolve():
                 raise ValueError(
                     "resume_from must not include the current artifact directory"
                 )
@@ -176,12 +203,52 @@ class CacheManager:
                 raise ValueError(
                     f"Compressed recovery source changed during indexing: {path}"
                 )
+        if results is not None:
+            size_bytes = results.stat().st_size
+            self.report.sources.append(
+                CacheSource(path=str(results), size_bytes=size_bytes)
+            )
+            with closing(sqlite3.connect(results.parent / "results.sqlite3")) as index:
+                self.database.executemany(
+                    "INSERT OR REPLACE INTO successes VALUES (?, ?, ?, ?)",
+                    (
+                        (session_id, fingerprint, str(results), line)
+                        for session_id, fingerprint, line in index.execute(
+                            "SELECT id, fingerprint, line FROM records"
+                        )
+                    ),
+                )
         self.database.commit()
         self.report.successful_records = self.database.execute(
             "SELECT count(*) FROM successes"
         ).fetchone()[0]
 
     def _index_file(self, path: Path, handle: BinaryIO, size_bytes: int) -> None:
+        imported: list[bytes] = []
+        imported_bytes = 0
+        for line_number, line, record in self._read_records(path, handle, size_bytes):
+            identity = _record_identity(record)
+            if identity is None:
+                self.report.ignored_records += 1
+                continue
+            cursor = self.database.execute(
+                "INSERT OR IGNORE INTO successes VALUES (?, ?, ?, ?)",
+                (*identity, str(path), line_number),
+            )
+            self.report.duplicate_successes += cursor.rowcount == 0
+            if self.cache_dir is not None:
+                imported.append(line)
+                imported_bytes += len(line)
+                if imported_bytes >= 8 * 1024 * 1024 or len(imported) >= 128:
+                    self.append_results(self.cache_dir, imported)
+                    imported = []
+                    imported_bytes = 0
+        if imported:
+            self.append_results(self.cache_dir, imported)
+
+    def _read_records(
+        self, path: Path, handle: BinaryIO, size_bytes: int
+    ) -> Iterator[tuple[int, bytes, dict[str, Any]]]:
         remaining = size_bytes if path.suffix != ".zst" else None
         line_number = 0
         while remaining is None or remaining > 0:
@@ -211,19 +278,78 @@ class CacheManager:
                 raise ValueError(
                     f"RAW record must be an object at {path}:{line_number}"
                 )
-            payload = _successful_payload(record)
-            metadata = record.get("metadata") or {}
-            session_id = (
-                metadata.get("conversation_id") if isinstance(metadata, dict) else None
-            )
-            if payload is None or not isinstance(session_id, str) or not session_id:
-                self.report.ignored_records += 1
-                continue
-            cursor = self.database.execute(
-                "INSERT OR IGNORE INTO successes VALUES (?, ?, ?, ?)",
-                (session_id, payload_fingerprint(payload), str(path), line_number),
-            )
-            self.report.duplicate_successes += cursor.rowcount == 0
+            yield line_number, line, record
+
+    @staticmethod
+    def append_results(directory: Path, records: Iterable[bytes]) -> None:
+        """Append unique successful RAW records under a cross-process lock.
+
+        The JSONL is authoritative. SQLite holds only identities and an indexed
+        byte boundary; complete writes made before an interrupted transaction are
+        replayed on the next append. Only an incomplete final line is truncated.
+        Call from an I/O thread, never directly from a service event loop.
+        """
+        directory = directory.resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        with FileLock(directory / "results.lock", timeout=60):
+            database = sqlite3.connect(directory / "results.sqlite3")
+            try:
+                database.execute("PRAGMA cache_size=-8192")
+                database.execute(
+                    "CREATE TABLE IF NOT EXISTS records (id TEXT, fingerprint TEXT, line INTEGER, PRIMARY KEY(id, fingerprint))"
+                )
+                database.execute(
+                    "CREATE TABLE IF NOT EXISTS boundary (offset INTEGER NOT NULL, lines INTEGER NOT NULL)"
+                )
+                row = database.execute("SELECT offset, lines FROM boundary").fetchone()
+                if row is None:
+                    database.execute("INSERT INTO boundary VALUES (0, 0)")
+                offset = row[0] if row else 0
+                line_number = row[1] if row else 0
+                output = directory / "results.jsonl"
+                with output.open("a+b") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    if handle.tell() < offset:
+                        raise ValueError(
+                            f"Persistent result cache was truncated: {output}"
+                        )
+                    handle.seek(offset)
+                    while line := handle.readline():
+                        if not line.endswith(b"\n"):
+                            handle.truncate(offset)
+                            break
+                        identity = _record_identity(orjson.loads(line))
+                        if identity is None:
+                            raise ValueError(
+                                f"Invalid persistent result at {output}:{offset}"
+                            )
+                        line_number += 1
+                        database.execute(
+                            "INSERT OR IGNORE INTO records VALUES (?, ?, ?)",
+                            (*identity, line_number),
+                        )
+                        offset = handle.tell()
+                    handle.seek(0, os.SEEK_END)
+                    for line in records:
+                        identity = _record_identity(orjson.loads(line))
+                        if identity is None:
+                            continue
+                        cursor = database.execute(
+                            "INSERT OR IGNORE INTO records VALUES (?, ?, ?)",
+                            (*identity, line_number + 1),
+                        )
+                        if cursor.rowcount:
+                            handle.write(line.rstrip(b"\n") + b"\n")
+                            line_number += 1
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                    database.execute(
+                        "UPDATE boundary SET offset=?, lines=?",
+                        (handle.tell(), line_number),
+                    )
+                    database.commit()
+            finally:
+                database.close()
 
     def pending(self, conversations: Iterable[Conversation]) -> Iterator[Conversation]:
         """Yield only unmatched samples, rejecting grouped or duplicate IDs."""

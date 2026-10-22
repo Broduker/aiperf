@@ -30,6 +30,7 @@ async def recovery_server(
     "resume,all_cached", [(False, False), (True, False), (True, True)]
 )
 @pytest.mark.parametrize("continuous", [False, True])
+@pytest.mark.parametrize("persistent", [False, True])
 async def test_streaming_run_with_optional_recovery(
     cli: AIPerfCLI,
     recovery_server: AIPerfMockServer,
@@ -38,6 +39,7 @@ async def test_streaming_run_with_optional_recovery(
     all_cached: bool,
     resume: bool,
     continuous: bool,
+    persistent: bool,
 ) -> None:
     source = tmp_path / "input.jsonl"
     source.write_bytes(
@@ -82,6 +84,8 @@ async def test_streaming_run_with_optional_recovery(
             sla={"request_latency": {"avg": {"le": 10000}}},
         )
         benchmark["datasets"][0]["streaming"] = True
+    if persistent:
+        benchmark["datasets"][0]["cache_dir"] = str(temp_output_dir / "persistent")
     cfg = BenchmarkConfig.model_validate(benchmark)
     run = BenchmarkRun(
         benchmark_id="cache-fixture", cfg=cfg, artifact_dir=temp_output_dir
@@ -136,13 +140,33 @@ async def test_streaming_run_with_optional_recovery(
         f'aiperf profile --config "{config}" --tokenizer builtin', timeout=90
     )
     assert result.exit_code == 0
-    if resume:
-        assert result.request_count == (0 if all_cached else 1)
+    if resume or persistent:
+        assert result.request_count == ((0 if all_cached else 1) if resume else 2)
         report = orjson.loads(
             (temp_output_dir / "result_cache/report.json").read_bytes()
         )
-        assert report["cached_samples"] == (2 if all_cached else 1)
-        assert report["pending_samples"] == (0 if all_cached else 1)
+        assert report["cached_samples"] == ((2 if all_cached else 1) if resume else 0)
+        assert report["pending_samples"] == ((0 if all_cached else 1) if resume else 2)
     else:
         assert result.request_count == (2 if continuous else 50)
         assert not (temp_output_dir / "result_cache").exists()
+    if persistent:
+        results_file = temp_output_dir / "persistent/results.jsonl"
+        results = [
+            orjson.loads(line) for line in results_file.read_bytes().splitlines()
+        ]
+        assert {record["metadata"]["conversation_id"] for record in results} == {
+            "one",
+            "two",
+        }
+        assert len(results) == 2
+        original = results_file.read_bytes()
+        benchmark["datasets"][0]["resume_from"] = []
+        history.unlink()
+        config.write_text(yaml.safe_dump({"benchmark": benchmark}))
+        resumed = await cli.run(
+            f'aiperf profile --config "{config}" --tokenizer builtin', timeout=90
+        )
+        assert resumed.exit_code == 0
+        assert resumed.request_count == 0
+        assert results_file.read_bytes() == original

@@ -464,8 +464,20 @@ class BenchmarkConfig(BaseConfig, BenchmarkHelpersMixin):
         """Keep recovery single-pass and reject modes that transform requests at dispatch."""
         from aiperf.common.enums import CacheBustTarget
 
-        if not any(getattr(dataset, "resume_from", None) for dataset in self.datasets):
+        if not any(
+            getattr(dataset, "resume_enabled", False) for dataset in self.datasets
+        ):
             return self
+        if (
+            any(
+                getattr(dataset, "cache_dir", None) is not None
+                for dataset in self.datasets
+            )
+            and not self.artifacts.raw
+        ):
+            raise ValueError(
+                "cache_dir requires artifacts.raw=true to persist complete results"
+            )
         if (
             len(self.datasets) != 1
             or len(self.phases) != 1

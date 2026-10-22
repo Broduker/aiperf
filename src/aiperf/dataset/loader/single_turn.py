@@ -105,7 +105,7 @@ class SingleTurnDatasetLoader(BaseFileLoader, MediaConversionMixin):
     def _iter_session_records(self) -> Iterator[tuple[str, SingleTurn]]:
         """Parse records with shared session identity validation for both load modes."""
         requires_session_ids = bool(
-            getattr(self.run.cfg.get_default_dataset(), "resume_from", None)
+            getattr(self.run.cfg.get_default_dataset(), "resume_enabled", False)
         )
         for record_dict in self._iter_record_dicts():
             single_turn_data = SingleTurn.model_validate(record_dict)
@@ -175,7 +175,7 @@ class SingleTurnDatasetLoader(BaseFileLoader, MediaConversionMixin):
         current_turns: list[SingleTurn] = []
         closed_ids: set[str] = set()
         recovering = bool(
-            getattr(self.run.cfg.get_default_dataset(), "resume_from", None)
+            getattr(self.run.cfg.get_default_dataset(), "resume_enabled", False)
         )
         for session_id, single_turn in self._iter_session_records():
             if recovering and current_id == session_id:

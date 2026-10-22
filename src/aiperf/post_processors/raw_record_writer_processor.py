@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import aiofiles
 import orjson
@@ -22,6 +24,7 @@ from aiperf.common.models import (
 )
 from aiperf.common.redact import redact_headers
 from aiperf.config.artifacts import OutputDefaults
+from aiperf.dataset.cache_manager import CacheManager
 from aiperf.exporters.exporter_config import ExporterConfig, FileExportInfo
 
 if TYPE_CHECKING:
@@ -60,6 +63,9 @@ class RawRecordWriterProcessor(BufferedJSONLWriterMixin[RawRecordInfo]):
         # Each processor writes to its own file - avoids locking/contention
         # Sanitize service_id for filename (replace special chars)
         safe_id = self.service_id.replace("/", "_").replace(":", "_").replace(" ", "_")
+        self._cache_dir = getattr(run.cfg.get_default_dataset(), "cache_dir", None)
+        if self._cache_dir is not None:
+            safe_id = f"{safe_id}_{uuid4().hex}"
         output_file = output_dir / f"raw_records_{safe_id}.jsonl"
 
         # Initialize the buffered writer mixin
@@ -169,6 +175,19 @@ class RawRecordWriterProcessor(BufferedJSONLWriterMixin[RawRecordInfo]):
             self.dropped_record_count += 1
             if self._write_error is None:
                 self._write_error = e
+
+    async def _flush_buffer(self, buffer_to_flush: list[bytes]) -> None:
+        """Persist successful results as part of the RAW finalization barrier."""
+        await super()._flush_buffer(buffer_to_flush)
+        if self._cache_dir is not None and buffer_to_flush:
+            try:
+                await asyncio.to_thread(
+                    CacheManager.append_results, self._cache_dir, buffer_to_flush
+                )
+            except Exception as error:
+                self._buffer = buffer_to_flush + self._buffer
+                self._write_error = error
+                raise
 
     async def observe(self, ctx: RecordObserverContext) -> None:
         """Write the raw request/response data for a single record."""

@@ -303,15 +303,31 @@ class FileDataset(SystemPromptMixin):
         "Supports plain and zstd-compressed RAW exports. Paths must be mounted in the dataset manager.",
     )
 
+    cache_dir: Path | None = Field(
+        default=None,
+        description="Persistent single-turn result cache directory. Successful full RAW records are "
+        "deduplicated and appended to results.jsonl and reused on restart. Requires artifacts.raw=true. "
+        "Use an absolute path mounted at the same location in dataset-manager and record-processor pods.",
+    )
+
+    @property
+    def resume_enabled(self) -> bool:
+        """Whether historical results should filter this dataset."""
+        return bool(self.resume_from or self.cache_dir is not None)
+
     @model_validator(mode="after")
     def _validate_result_resume(self) -> FileDataset:
-        if self.resume_from and (
+        if self.resume_enabled and (
             self.format != DatasetFormat.SINGLE_TURN
             or self.path is None
             or self.sampling != DatasetSamplingStrategy.SEQUENTIAL
         ):
             raise ValueError(
-                "resume_from requires a path-backed single_turn dataset with sequential sampling"
+                "resume_from/cache_dir requires a path-backed single_turn dataset with sequential sampling"
+            )
+        if self.cache_dir is not None and not self.cache_dir.is_absolute():
+            raise ValueError(
+                "cache_dir must be an absolute path shared by all services"
             )
         return self
 

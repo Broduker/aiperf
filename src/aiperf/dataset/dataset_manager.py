@@ -225,7 +225,7 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         # cache targets would block the DatasetManager event loop -- and its
         # heartbeat/command handlers -- for the full hash. Mirrors the populate/
         # restore paths, which are already offloaded.
-        if getattr(self.run.cfg.get_default_dataset(), "resume_from", None):
+        if getattr(self.run.cfg.get_default_dataset(), "resume_enabled", False):
             self._cache_manager = await asyncio.to_thread(CacheManager, self.run)
         cache_hit = await asyncio.to_thread(self._try_cache_lookup)
         if cache_hit is not None:
@@ -1011,7 +1011,7 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         default_dataset = self.run.cfg.get_default_dataset()
 
         if isinstance(default_dataset, FileDataset) and (
-            default_dataset.streaming or default_dataset.resume_from
+            default_dataset.streaming or default_dataset.resume_enabled
         ):
             await self._configure_streaming_file_dataset(default_dataset)
             return
