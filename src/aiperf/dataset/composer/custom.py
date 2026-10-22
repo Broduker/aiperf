@@ -125,18 +125,6 @@ class CustomDatasetComposer(BaseDatasetComposer):
         self._create_loader_instance(dataset_type)
         return dataset_type
 
-    def iter_resume_conversations(self) -> Iterator[Conversation]:
-        """Finalize single-turn recovery samples without materializing the file."""
-        from aiperf.dataset.loader.single_turn import SingleTurnDatasetLoader
-
-        self.detected_dataset_type = CustomDatasetType.SINGLE_TURN
-        self._create_loader_instance(self.detected_dataset_type)
-        assert isinstance(self.loader, SingleTurnDatasetLoader)
-        for conversation in self.loader.iter_resume_conversations():
-            self._finalize_turn(conversation.turns[0])
-            self._finalize_conversations([conversation])
-            yield conversation
-
     def get_default_context_mode(self) -> ConversationContextMode | None:
         """Delegate to the loader's format-specific default, if a loader was created."""
         if self.loader is not None:

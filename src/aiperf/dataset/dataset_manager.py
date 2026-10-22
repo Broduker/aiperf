@@ -8,6 +8,7 @@ import gc
 import tempfile
 import time
 from io import BytesIO
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -1009,11 +1010,9 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         accuracy_enabled = accuracy_cfg.enabled if accuracy_cfg else False
         default_dataset = self.run.cfg.get_default_dataset()
 
-        if isinstance(default_dataset, FileDataset) and default_dataset.resume_from:
-            await self._configure_resumed_dataset(default_dataset)
-            return
-
-        if isinstance(default_dataset, FileDataset) and default_dataset.streaming:
+        if isinstance(default_dataset, FileDataset) and (
+            default_dataset.streaming or default_dataset.resume_from
+        ):
             await self._configure_streaming_file_dataset(default_dataset)
             return
 
@@ -1126,71 +1125,6 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         await self.publish(notification)
         self._start_dataset_rebroadcast(notification)
 
-    async def _configure_resumed_dataset(self, dataset_config: FileDataset) -> None:
-        """Stream pending samples into mmap while keeping only metadata in memory."""
-        from aiperf.dataset.composer.custom import CustomDatasetComposer
-
-        assert self._cache_manager is not None
-        composer = CustomDatasetComposer(run=self.run, tokenizer=self.tokenizer)
-        source = self._cache_manager.pending(composer.iter_resume_conversations())
-        BackingStoreClass = plugins.get_class(
-            PluginType.DATASET_BACKING_STORE, DatasetBackingStoreType.MEMORY_MAP
-        )
-        self._backing_store = BackingStoreClass(
-            benchmark_id=self.run.benchmark_id,
-            compress_only=self._compress_only,
-            format=MemoryMapFormat.CONVERSATION,
-        )
-        await self._backing_store.initialize()
-        metadata: list[ConversationMetadata] = []
-
-        def read_batch() -> list[Conversation]:
-            batch: list[Conversation] = []
-            for _ in range(128):
-                conversation = next(source, None)
-                if conversation is None:
-                    break
-                batch.append(conversation)
-            return batch
-
-        while batch := await asyncio.to_thread(read_batch):
-            self.dataset = {
-                conversation.session_id: conversation for conversation in batch
-            }
-            if plugins.get_endpoint_metadata(
-                self.run.cfg.endpoint.type
-            ).requires_inline_media:
-                await self._convert_media_urls_to_inline()
-            await self._backing_store.add_conversations(self.dataset)
-            metadata.extend(conversation.metadata() for conversation in batch)
-            self.dataset = {}
-        await self._backing_store.finalize()
-        await asyncio.to_thread(self._cache_manager.save_report)
-        self._default_context_mode = composer.get_default_context_mode()
-        self._detected_dataset_type = composer.detected_dataset_type
-        self.dataset_metadata = DatasetMetadata(
-            conversations=metadata,
-            sampling_strategy=dataset_config.sampling,
-            default_context_mode=self._default_context_mode,
-            result_cache=self._cache_manager.report,
-        )
-        self.info(
-            f"Result cache: {self._cache_manager.report.cached_samples} reused, "
-            f"{self._cache_manager.report.pending_samples} pending"
-        )
-        notification = DatasetConfiguredNotification(
-            service_id=self.service_id,
-            metadata=self.dataset_metadata,
-            client_metadata=self._backing_store.get_client_metadata(),
-            benchmark_generation=self.run.benchmark_id,
-            dataset_generation=_dataset_generation_of(
-                self._backing_store.get_client_metadata()
-            ),
-        )
-        self._last_dataset_configured_notification = notification
-        await self.publish(notification)
-        self._start_dataset_rebroadcast(notification)
-
     @on_stop
     async def _close_cache_manager(self) -> None:
         if self._cache_manager is not None:
@@ -1200,7 +1134,7 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
     async def _configure_streaming_file_dataset(
         self, dataset_config: FileDataset
     ) -> None:
-        """Load a single-turn file into mmap storage without retaining full conversations."""
+        """Stream bounded batches into mmap, optionally filtering historical successes."""
         from aiperf.dataset.composer.custom import CustomDatasetComposer
 
         if dataset_config.records is not None or dataset_config.path is None:
@@ -1213,6 +1147,9 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
 
         composer = CustomDatasetComposer(run=self.run, tokenizer=self.tokenizer)
         conversation_iter = composer.iter_conversations()
+        requires_inline_media = plugins.get_endpoint_metadata(
+            self.run.cfg.endpoint.type
+        ).requires_inline_media
         BackingStoreClass = plugins.get_class(
             PluginType.DATASET_BACKING_STORE, DatasetBackingStoreType.MEMORY_MAP
         )
@@ -1227,17 +1164,21 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         conversation_count = 0
         turn_count = 0
 
-        def read_batch() -> list[Conversation]:
-            """Parse one bounded batch off the DatasetManager event loop."""
-            batch: list[Conversation] = []
-            try:
-                for _ in range(dataset_config.streaming_batch_size):
-                    batch.append(next(conversation_iter))
-            except StopIteration:
-                pass
-            return batch
-
-        while batch := await asyncio.to_thread(read_batch):
+        while batch := await asyncio.to_thread(
+            list, islice(conversation_iter, dataset_config.streaming_batch_size)
+        ):
+            if requires_inline_media:
+                self.dataset = {
+                    conversation.session_id: conversation for conversation in batch
+                }
+                await self._convert_media_urls_to_inline()
+                self.dataset = {}
+            if self._cache_manager is not None:
+                batch = await asyncio.to_thread(
+                    list, self._cache_manager.pending(batch)
+                )
+            if not batch:
+                continue
             conversations = {
                 conversation.session_id: conversation for conversation in batch
             }
@@ -1245,9 +1186,15 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
             metadata.extend(conversation.metadata() for conversation in batch)
             conversation_count += len(batch)
             turn_count += sum(len(conversation.turns) for conversation in batch)
-        if not metadata:
+        if not metadata and self._cache_manager is None:
             raise ValueError("streaming dataset contains no valid conversations")
         await self._backing_store.finalize()
+        if self._cache_manager is not None:
+            await asyncio.to_thread(self._cache_manager.save_report)
+            self.info(
+                f"Result cache: {self._cache_manager.report.cached_samples} reused, "
+                f"{self._cache_manager.report.pending_samples} pending"
+            )
 
         self._default_context_mode = composer.get_default_context_mode()
         self._detected_dataset_type = composer.detected_dataset_type
@@ -1257,6 +1204,9 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
             conversations=metadata,
             sampling_strategy=dataset_config.sampling,
             default_context_mode=self._default_context_mode,
+            result_cache=self._cache_manager.report
+            if self._cache_manager is not None
+            else None,
         )
         self.info(
             f"Streaming dataset configured: conversations={conversation_count}, "

@@ -98,28 +98,23 @@ class SingleTurnDatasetLoader(BaseFileLoader, MediaConversionMixin):
         the same session_id (or generated UUID) are grouped together.
         """
         data: dict[str, list[SingleTurn]] = defaultdict(list)
+        for session_id, single_turn_data in self._iter_session_records():
+            data[session_id].append(single_turn_data)
+        return data
+
+    def _iter_session_records(self) -> Iterator[tuple[str, SingleTurn]]:
+        """Parse records with shared session identity validation for both load modes."""
+        requires_session_ids = bool(
+            getattr(self.run.cfg.get_default_dataset(), "resume_from", None)
+        )
         for record_dict in self._iter_record_dicts():
             single_turn_data = SingleTurn.model_validate(record_dict)
-            if (
-                getattr(self.run.cfg.get_default_dataset(), "resume_from", None)
-                and not single_turn_data.session_id
-            ):
+            if requires_session_ids and not single_turn_data.session_id:
                 raise ValueError(
                     "resume_from requires an explicit non-empty session_id on every input record"
                 )
             session_id = single_turn_data.session_id or self.session_id_generator.next()
-            data[session_id].append(single_turn_data)
-        return data
-
-    def iter_resume_conversations(self) -> Iterator[Conversation]:
-        """Stream explicit, independent samples; the disk index checks uniqueness."""
-        for record in self._iter_record_dicts():
-            sample = SingleTurn.model_validate(record)
-            if not sample.session_id:
-                raise ValueError(
-                    "resume_from requires an explicit non-empty session_id on every input record"
-                )
-            yield self.convert_to_conversations({sample.session_id: [sample]})[0]
+            yield session_id, single_turn_data
 
     def convert_to_conversations(
         self, data: dict[str, list[SingleTurn]]
@@ -173,16 +168,23 @@ class SingleTurnDatasetLoader(BaseFileLoader, MediaConversionMixin):
         common single-turn case generates a new session ID per record, while
         adjacent records with an explicit session ID remain one conversation.
         Non-contiguous session IDs are rejected rather than silently changing
-        their turn ordering.
+        their turn ordering. Recovery requires independent records with explicit
+        IDs; CacheManager checks their uniqueness on disk.
         """
         current_id: str | None = None
         current_turns: list[SingleTurn] = []
         closed_ids: set[str] = set()
-        for record_dict in self._iter_record_dicts():
-            single_turn = SingleTurn.model_validate(record_dict)
-            session_id = single_turn.session_id or self.session_id_generator.next()
+        recovering = bool(
+            getattr(self.run.cfg.get_default_dataset(), "resume_from", None)
+        )
+        for session_id, single_turn in self._iter_session_records():
+            if recovering and current_id == session_id:
+                raise ValueError(
+                    f"Duplicate session_id in recovery input: {session_id!r}"
+                )
             if current_id is not None and session_id != current_id:
-                closed_ids.add(current_id)
+                if not recovering:
+                    closed_ids.add(current_id)
                 yield self.convert_to_conversations({current_id: current_turns})[0]
                 current_turns = []
             if session_id in closed_ids:

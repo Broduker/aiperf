@@ -156,6 +156,13 @@ after another session is rejected. It is not a replacement for trace replay,
 random sampling, or multi-turn datasets. `streaming_batch_size` controls the
 bounded write batch and defaults to 256.
 
+Setting `resume_from` automatically selects this same streaming loader, even
+when `streaming` is omitted or false. `CacheManager` filters historical successes
+within each bounded batch before it is written to mmap. `streaming_batch_size`
+also controls recovery batches, including batches in which every sample is
+cached. Recovery requires unique explicit IDs and one turn per ID; ordinary
+streaming continues to group contiguous records sharing a session ID.
+
 ### Basic Text Example
 
 <!-- aiperf-run-vllm-default-openai-endpoint-server -->

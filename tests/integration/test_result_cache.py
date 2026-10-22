@@ -26,14 +26,17 @@ async def recovery_server(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("all_cached", [False, True])
+@pytest.mark.parametrize(
+    "resume,all_cached", [(False, False), (True, False), (True, True)]
+)
 @pytest.mark.parametrize("continuous", [False, True])
-async def test_resumed_run_sends_only_pending_requests(
+async def test_streaming_run_with_optional_recovery(
     cli: AIPerfCLI,
     recovery_server: AIPerfMockServer,
     tmp_path: Path,
     temp_output_dir: Path,
     all_cached: bool,
+    resume: bool,
     continuous: bool,
 ) -> None:
     source = tmp_path / "input.jsonl"
@@ -55,7 +58,8 @@ async def test_resumed_run_sends_only_pending_requests(
                 "type": "file",
                 "format": "single_turn",
                 "path": str(source),
-                "resume_from": [str(history)],
+                "resume_from": [str(history)] if resume else [],
+                "streaming": not resume,
             }
         ],
         "phases": [
@@ -84,9 +88,7 @@ async def test_resumed_run_sends_only_pending_requests(
     )
     rng.reset()
     rng.init(42)
-    samples = list(
-        CustomDatasetComposer(run=run, tokenizer=None).iter_resume_conversations()
-    )
+    samples = list(CustomDatasetComposer(run=run, tokenizer=None).iter_conversations())
     payloads = list(
         format_conversation_payloads(samples, ModelEndpointInfo.from_run(run))
     )
@@ -134,7 +136,13 @@ async def test_resumed_run_sends_only_pending_requests(
         f'aiperf profile --config "{config}" --tokenizer builtin', timeout=90
     )
     assert result.exit_code == 0
-    assert result.request_count == (0 if all_cached else 1)
-    report = orjson.loads((temp_output_dir / "result_cache/report.json").read_bytes())
-    assert report["cached_samples"] == (2 if all_cached else 1)
-    assert report["pending_samples"] == (0 if all_cached else 1)
+    if resume:
+        assert result.request_count == (0 if all_cached else 1)
+        report = orjson.loads(
+            (temp_output_dir / "result_cache/report.json").read_bytes()
+        )
+        assert report["cached_samples"] == (2 if all_cached else 1)
+        assert report["pending_samples"] == (0 if all_cached else 1)
+    else:
+        assert result.request_count == (2 if continuous else 50)
+        assert not (temp_output_dir / "result_cache").exists()
