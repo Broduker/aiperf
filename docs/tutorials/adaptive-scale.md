@@ -64,6 +64,16 @@ The canonical adaptive shape uses `adaptive_scale.control` for the load-control 
 
 Do not combine adaptive scale with a fixed ramp on the same variable. For example, `control.variable: prefill_concurrency` cannot be used with `prefill_ramp`, and `control.variable: request_rate` cannot be used with `rate_ramp`. Fixed ramps for other variables are allowed.
 
+## Continuous adaptation until input exhaustion
+
+Set the profiling phase's `duration: -1` to keep assessing and adjusting load throughout one pass over the dataset. Keep `adaptive_scale.sustain_duration` strictly positive. For example, change the YAML above to `duration: -1` and `sustain_duration: 120` to re-explore capacity after each successful two-minute sustain period.
+
+In this mode, sustain completion emits `adaptive_discovery_resumed` and resumes upward exploration from the current passing load. Reaching `control.max` holds and reassesses that load instead of ending the run. SLA misses can reduce load repeatedly down to `control.min`; a miss at the minimum keeps assessing there until the service recovers or the input ends. Inconclusive windows still leave load unchanged. Positive-duration runs retain their existing terminal behavior.
+
+Each root conversation starts once, including all its continuation turns and DAG children. Sampling restarts at the beginning for this phase, independently of warmup. Sequential input keeps dataset order; shuffle and random sampling use a shuffled pass without replacement. Synthetic datasets are also finite in this mode: `entries` determines the pass size. Explicit `requests` or `sessions` limits can stop the run earlier. In-flight work drains according to the configured grace period; request errors remain errors and are not automatically retried.
+
+This is one adaptive phase in one job, rather than one job per adjustment. There is no duration deadline, and the estimated total duration is unknown. Cancellation and runtime failures still terminate the run. `duration: -1` is only valid for adaptive profiling phases.
+
 ## Boundary Example
 
 This example demonstrates adaptive scale discovering a latency boundary against an OpenAI-compatible chat endpoint. Make sure the endpoint is reachable at `localhost:8000`, then tune the `model` and SLA threshold for your service.

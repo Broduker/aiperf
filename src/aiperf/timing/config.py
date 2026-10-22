@@ -421,6 +421,10 @@ class CreditPhaseConfig(AIPerfBaseModel):
         return folded
 
     @property
+    def adaptive_continuous(self) -> bool:
+        return self.adaptive.adaptive_continuous
+
+    @property
     def adaptive_sustain_duration_sec(self) -> float | None:
         return self.adaptive.adaptive_sustain_duration_sec
 
@@ -708,7 +712,8 @@ def _build_profiling_config(
         phase_kind=phase.kind,
         request_cancellation=_phase_cancellation_config(phase, default_cancellation),
         timing_mode=timing_mode,
-        expected_duration_sec=phase.duration,
+        expected_duration_sec=None if phase.duration == -1 else phase.duration,
+        adaptive_continuous=phase.duration == -1,
         total_expected_requests=phase.requests,
         expected_num_sessions=phase.sessions,
         concurrency=phase.concurrency,

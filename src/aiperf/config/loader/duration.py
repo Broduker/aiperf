@@ -37,6 +37,8 @@ def _parse_duration(v: Any) -> float | None:
     if isinstance(v, (int, float)):
         return float(v)
     if isinstance(v, str):
+        if v.strip() == "-1":
+            return -1.0
         if v.strip().lower() in ("inf", "infinity"):
             return float("inf")
         match = _DURATION_PATTERN.match(v.strip())

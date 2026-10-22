@@ -799,6 +799,54 @@ def test_breach_enters_sustain_at_last_good_boundary(tmp_path) -> None:
     assert events[-1]["control_value_after"] == 4
 
 
+def test_continuous_sustain_resumes_upward_discovery(tmp_path: Path) -> None:
+    strategy = _strategy(tmp_path, adaptive_continuous=True, expected_duration_sec=None)
+    strategy._last_good_concurrency = 4
+    strategy._set_control(5)
+    stats = MagicMock(samples=[50_000_000], errors=0, throughput=2.0)
+    strategy._assess_discover(150.0, False, stats)
+    strategy._sustain_started_at = time.perf_counter() - 20.0
+
+    strategy._assess_sustain(50.0, True, stats)
+
+    assert strategy._controller_phase == "discover"
+    assert strategy._control.current > 4
+    assert strategy._first_failing_concurrency is None
+    assert strategy._sustain_started_at_ns is None
+    assert strategy._completed_reason is None
+    strategy._lifecycle.mark_sending_complete.assert_not_called()
+
+
+def test_continuous_maximum_keeps_assessing_and_can_reduce_load(tmp_path: Path) -> None:
+    strategy = _strategy(tmp_path, adaptive_continuous=True, expected_duration_sec=None)
+    strategy._set_control(10)
+    stats = MagicMock(samples=[50_000_000], errors=0, throughput=2.0)
+    strategy._assess_discover(50.0, True, stats)
+    assert strategy._controller_phase == "sustain"
+    for _ in range(10):
+        strategy._assess_sustain(150.0, False, stats)
+    assert strategy._control.current == strategy._control.minimum
+    assert strategy._completed_reason is None
+    strategy._lifecycle.mark_sending_complete.assert_not_called()
+    strategy._sustain_started_at = time.perf_counter() - 20.0
+    strategy._assess_sustain(50.0, True, stats)
+    assert strategy._controller_phase == "discover"
+    assert strategy._control.current > strategy._control.minimum
+
+
+def test_continuous_initial_failure_holds_minimum_until_recovery(
+    tmp_path: Path,
+) -> None:
+    strategy = _strategy(tmp_path, adaptive_continuous=True, expected_duration_sec=None)
+    strategy._set_control(2)
+    stats = MagicMock(samples=[], errors=3, throughput=0.0)
+    strategy._controller.assess_failed_window(strategy, stats)
+    assert strategy._controller_phase == "sustain"
+    assert strategy._last_good_concurrency is None
+    assert strategy._completed_reason is None
+    strategy._lifecycle.mark_sending_complete.assert_not_called()
+
+
 def test_sustain_completion_writes_complete_event_and_summary(tmp_path) -> None:
     strategy = _strategy(tmp_path, threshold=100.0)
     strategy._controller_phase = "sustain"

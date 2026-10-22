@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Annotated, ClassVar, Literal, Self
 
 from pydantic import (
+    BeforeValidator,
     ConfigDict,
     Discriminator,
     Field,
@@ -144,11 +145,11 @@ class BasePhaseConfig(AdaptiveScalePhaseMixin, BaseConfig):
     ]
 
     duration: Annotated[
-        DurationSpec,
+        Annotated[float, Field(gt=0)] | Literal[-1] | None,
+        BeforeValidator(_normalize_duration),
         Field(
-            gt=0,
             default=None,
-            description="Stop after this time elapsed (must be > 0). Supports: 300, '5m', '2h'.",
+            description="Stop after this time elapsed (> 0), or -1 for continuous adaptive scale until input exhaustion. Supports: 300, '5m', '2h'.",
         ),
     ]
 
@@ -425,6 +426,10 @@ class BasePhaseConfig(AdaptiveScalePhaseMixin, BaseConfig):
             )
 
         self.kind = infer_legacy_phase_kind(self.name, self.kind)
+        if self.duration == -1 and (
+            not self.adaptive_scale or self.kind != "profiling"
+        ):
+            raise ValueError("duration=-1 requires adaptive_scale on a profiling phase")
         if self.kind is None:
             raise ValueError(
                 f"Phase '{self.name}': kind is required for non-canonical phase "

@@ -648,6 +648,34 @@ class TestDatasetResolver:
 
 
 class TestTimingResolver:
+    def test_continuous_adaptive_duration_is_unknown(self, tmp_path: Path) -> None:
+        config = BenchmarkConfig(
+            models=["test-model"],
+            endpoint={"urls": ["http://localhost:8000/v1/chat/completions"]},
+            datasets=[
+                {
+                    "name": "main",
+                    "type": "synthetic",
+                    "entries": 10,
+                    "prompts": {"isl": 32},
+                }
+            ],
+            phases=[
+                {
+                    "name": "profiling",
+                    "type": "concurrency",
+                    "duration": -1,
+                    "concurrency": 10,
+                    "adaptive_scale": True,
+                    "adaptive_sustain_duration": 10,
+                    "sla": {"request_latency": {"p95": {"le": 100}}},
+                }
+            ],
+        )
+        run = _make_run(config, artifact_dir=tmp_path)
+        TimingResolver().resolve(run)
+        assert run.resolved.total_expected_duration is None
+
     def test_sums_durations(self, tmp_path):
         config = BenchmarkConfig(
             models=["test-model"],

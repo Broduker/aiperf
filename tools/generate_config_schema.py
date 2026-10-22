@@ -687,7 +687,12 @@ class ConfigSchemaGenerator(Generator):
                 {
                     "type": "string",
                     "pattern": (
-                        r"^(?:\d+(?:\.\d+)?\s*"
+                        (
+                            r"^(?:-1|"
+                            if any(item.get("const") == -1 for item in any_of)
+                            else r"^(?:"
+                        )
+                        + r"\d+(?:\.\d+)?\s*"
                         r"(?:[sS]|[sS][eE][cC]|[mM]|[mM][iI][nN]|"
                         r"[hH]|[hH][rR]|[hH][oO][uU][rR])?|"
                         r"[iI][nN][fF](?:[iI][nN][iI][tT][yY])?)$"

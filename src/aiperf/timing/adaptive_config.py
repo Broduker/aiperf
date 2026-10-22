@@ -13,6 +13,7 @@ from aiperf.timing.adaptive_types import AdaptiveControlVariable
 
 ADAPTIVE_TIMING_FIELDS = frozenset(
     {
+        "adaptive_continuous",
         "adaptive_sustain_duration_sec",
         "adaptive_assessment_period_sec",
         "adaptive_control_variable",
@@ -69,6 +70,11 @@ class AdaptiveTimingConfig(AIPerfBaseModel):
     """Adaptive scale timing settings for a credit phase."""
 
     model_config = ConfigDict(frozen=True)
+
+    adaptive_continuous: bool = Field(
+        default=False,
+        description="Repeat adaptive discovery and sustain until a single dataset pass finishes.",
+    )
 
     adaptive_sustain_duration_sec: float | None = Field(
         default=None,

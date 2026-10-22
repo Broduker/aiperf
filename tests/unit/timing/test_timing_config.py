@@ -15,6 +15,7 @@ from aiperf.timing.config import (
     CreditPhaseConfig,
     RequestCancellationConfig,
     TimingConfig,
+    _build_profiling_config,
     _phase_request_rate,
 )
 from tests.unit.conftest import make_run_from_cli
@@ -24,6 +25,65 @@ def make_phase_config(**overrides) -> CreditPhaseConfig:
     defaults = {"phase": CreditPhase.PROFILING, "timing_mode": TimingMode.REQUEST_RATE}
     defaults.update(overrides)
     return CreditPhaseConfig(**defaults)
+
+
+@pytest.mark.parametrize("duration", [-1, "-1", -1.0])
+def test_continuous_adaptive_duration_has_no_runtime_deadline(
+    duration: float | str,
+) -> None:
+    phase = ConcurrencyPhase(
+        name="profiling",
+        type="concurrency",
+        concurrency=10,
+        duration=duration,
+        adaptive_scale=True,
+        adaptive_sustain_duration=10,
+        sla={"request_latency": {"p95": {"le": 100}}},
+    )
+    config = _build_profiling_config(
+        phase,
+        default_cancellation=RequestCancellationConfig(),
+        phase_index=0,
+        profiling_index=0,
+    )
+    assert config.adaptive_continuous is True
+    assert config.expected_duration_sec is None
+    assert config.adaptive_sustain_duration_sec == 10
+
+
+@pytest.mark.parametrize("duration", [-2, -0.5, 0])
+def test_adaptive_duration_rejects_other_nonpositive_values(duration: float) -> None:
+    with pytest.raises(ValidationError):
+        ConcurrencyPhase(
+            name="profiling",
+            type="concurrency",
+            concurrency=10,
+            duration=duration,
+            adaptive_scale=True,
+            adaptive_sustain_duration=10,
+            sla={"request_latency": {"p95": {"le": 100}}},
+        )
+
+
+def test_continuous_duration_requires_adaptive_scale() -> None:
+    with pytest.raises(ValidationError, match="requires adaptive_scale"):
+        ConcurrencyPhase(
+            name="profiling", type="concurrency", concurrency=10, duration=-1
+        )
+
+
+@pytest.mark.parametrize("sustain", [-1, 0])
+def test_continuous_adaptive_requires_positive_sustain(sustain: float) -> None:
+    with pytest.raises(ValidationError):
+        ConcurrencyPhase(
+            name="profiling",
+            type="concurrency",
+            concurrency=10,
+            duration=-1,
+            adaptive_scale=True,
+            adaptive_sustain_duration=sustain,
+            sla={"request_latency": {"p95": {"le": 100}}},
+        )
 
 
 # Fields recognized by ``make_cfg`` overrides. Each is routed to either

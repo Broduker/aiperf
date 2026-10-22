@@ -108,6 +108,9 @@ class AdaptiveScaleController:
         reason = "all requests failed in assessment window"
         if strategy._controller_phase == "discover":
             if strategy._last_good_concurrency is None:
+                if strategy._config.adaptive_continuous:
+                    self.enter_sustain(strategy, None, stats, reason)
+                    return
                 strategy._first_failing_concurrency = strategy._control.current
                 strategy._complete_controller(
                     reason="no_sustainable_concurrency_found",
@@ -136,6 +139,11 @@ class AdaptiveScaleController:
         if passing:
             strategy._last_good_concurrency = strategy._control.current
             if strategy._control.current >= strategy._control.maximum:
+                if strategy._config.adaptive_continuous:
+                    self.enter_sustain(
+                        strategy, sla_value, stats, "maximum control value reached"
+                    )
+                    return
                 strategy._complete_controller(
                     reason="max_control_value_reached_without_saturation",
                     terminal_event="adaptive_incomplete",
@@ -166,6 +174,11 @@ class AdaptiveScaleController:
             return
 
         if strategy._last_good_concurrency is None:
+            if strategy._config.adaptive_continuous:
+                self.enter_sustain(
+                    strategy, sla_value, stats, "minimum control value breaches SLA"
+                )
+                return
             strategy._first_failing_concurrency = strategy._control.current
             strategy._complete_controller(
                 reason="no_sustainable_concurrency_found",
@@ -198,14 +211,18 @@ class AdaptiveScaleController:
     ) -> None:
         strategy._sustain_windows += 1
         if passing:
-            self._assess_passing_sustain(strategy, sla_value, stats)
+            self._assess_passing_sustain(strategy, sla_value, stats, sla_values)
             return
         self._assess_failing_sustain(
             strategy, sla_value, stats, sla_values, reason=reason
         )
 
     def _assess_passing_sustain(
-        self, strategy, sla_value: float | None, stats: WindowStats
+        self,
+        strategy,
+        sla_value: float | None,
+        stats: WindowStats,
+        sla_values: dict[str, float] | None,
     ) -> None:
         strategy._sustain_passed_windows += 1
         strategy._last_good_concurrency = strategy._control.current
@@ -219,7 +236,7 @@ class AdaptiveScaleController:
             error_count=stats.errors,
             cancelled_count=_cancelled_count(stats),
         )
-        self._complete_sustain_if_elapsed(strategy, sla_value, stats)
+        self._complete_sustain_if_elapsed(strategy, sla_value, stats, sla_values)
 
     def _assess_failing_sustain(
         self,
@@ -230,7 +247,8 @@ class AdaptiveScaleController:
         *,
         reason: str | None,
     ) -> None:
-        if strategy._sustain_recovery_used:
+        continuous = strategy._config.adaptive_continuous
+        if strategy._sustain_recovery_used and not continuous:
             self._fail_sustain(
                 strategy, "sustain_failed_after_recovery", sla_value, stats
             )
@@ -238,12 +256,15 @@ class AdaptiveScaleController:
         strategy._sustain_recovery_used = True
         before = strategy._control.current
         target = self._sustain_recovery_target(strategy, before, sla_values)
-        if target == before == strategy._control.minimum:
+        if target == before == strategy._control.minimum and not continuous:
             self._fail_sustain(
                 strategy, "sustain_failed_sla_unrecoverable", sla_value, stats
             )
             return
         strategy._set_control(target)
+        if continuous:
+            strategy._last_good_concurrency = None
+            strategy._sustain_started_at = time.perf_counter()
         strategy._emit_event(
             event="adaptive_decision",
             reason=reason
@@ -287,12 +308,34 @@ class AdaptiveScaleController:
         strategy._stop_sending()
 
     def _complete_sustain_if_elapsed(
-        self, strategy, sla_value: float | None, stats: WindowStats
+        self,
+        strategy,
+        sla_value: float | None,
+        stats: WindowStats,
+        sla_values: dict[str, float] | None,
     ) -> None:
         if strategy._sustain_started_at is None:
             return
         elapsed = time.perf_counter() - strategy._sustain_started_at
         if elapsed < strategy._sustain_duration:
+            return
+        if strategy._config.adaptive_continuous:
+            before = strategy._control.current
+            strategy._controller_phase = "discover"
+            strategy._first_failing_concurrency = None
+            strategy._sustain_started_at = None
+            strategy._sustain_started_at_ns = None
+            strategy._sustain_recovery_used = False
+            strategy._set_control(strategy._next_up(sla_values))
+            strategy._emit_event(
+                event="adaptive_discovery_resumed",
+                reason="sustain duration completed; resume upward discovery",
+                sla_value=sla_value,
+                throughput=stats.throughput,
+                sample_count=len(stats.samples),
+                error_count=stats.errors,
+                before=before,
+            )
             return
         strategy._complete_controller(
             reason="sustain_duration_completed",
@@ -308,11 +351,14 @@ class AdaptiveScaleController:
     def enter_sustain(
         self, strategy, sla_value: float | None, stats: WindowStats, reason: str
     ) -> None:
-        if strategy._last_good_concurrency is None:
+        if (
+            strategy._last_good_concurrency is None
+            and not strategy._config.adaptive_continuous
+        ):
             raise RuntimeError("cannot enter sustain without a passing boundary")
         boundary = max(
             strategy._control.minimum,
-            strategy._last_good_concurrency,
+            strategy._last_good_concurrency or strategy._control.minimum,
         )
         before = strategy._control.current
         strategy._boundary_concurrency = boundary

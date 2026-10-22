@@ -44,6 +44,10 @@ from aiperf.kubernetes._memory_estimator.constants import (
     _INT32_BYTES,
     _SSE_BYTES_PER_CHUNK,
 )
+from aiperf.kubernetes._memory_estimator.params import (
+    _estimate_phase_duration,
+    _estimate_phase_requests,
+)
 from aiperf.kubernetes.memory_estimator import (
     ClusterMemoryEstimate,
     ComponentEstimate,
@@ -1936,6 +1940,13 @@ class TestPhaseRequestRateTracksAvgSecPerRequest:
     That reciprocal was hardcoded as ``0.5`` (and mislabeled "~10 req/sec per
     concurrent slot"), free to drift the moment the constant is recalibrated.
     """
+
+    def test_continuous_duration_uses_count_estimates(self) -> None:
+        phase = self._concurrency_phase(60, 5).model_copy(
+            update={"duration": -1, "sessions": 7}
+        )
+        assert _estimate_phase_requests(phase, 5) == 21
+        assert _estimate_phase_duration(phase, 5) > 0
 
     @staticmethod
     def _concurrency_phase(duration: float, concurrency: int) -> object:

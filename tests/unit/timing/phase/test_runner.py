@@ -204,6 +204,27 @@ async def runner(
 
 
 class TestPhaseRunnerLifecycle:
+    @pytest.mark.parametrize("session_limit,expected", [(None, 3), (2, 2), (10, 3)])
+    async def test_continuous_adaptive_uses_single_pass_budget(
+        self,
+        conv_src: MagicMock,
+        pub: MagicMock,
+        router: MagicMock,
+        conc: MagicMock,
+        cancel: MagicMock,
+        cb: MagicMock,
+        session_limit: int | None,
+        expected: int,
+    ) -> None:
+        conv_src.start_single_pass.return_value = 3
+        config = cfg(mode=TimingMode.ADAPTIVE_SCALE, dur=None).model_copy(
+            update={"adaptive_continuous": True, "expected_num_sessions": session_limit}
+        )
+        runner = make_runner(config, conv_src, pub, router, conc, cancel, cb)
+        assert runner._config.expected_num_sessions == expected
+        assert runner._lifecycle.time_left_in_seconds() is None
+        conv_src.start_single_pass.assert_called_once_with()
+
     async def test_fatal_control_node_failure_is_reraised_not_swallowed(
         self, runner: PhaseRunner
     ) -> None:

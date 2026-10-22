@@ -284,7 +284,7 @@ def _estimate_phase_requests(phase: BasePhaseConfig, concurrency: int) -> int:
     """Estimate total requests for a phase."""
     if phase.requests is not None:
         return phase.requests
-    if phase.duration is not None:
+    if phase.duration is not None and phase.duration != -1:
         if not isfinite(phase.duration):
             raise ValueError(
                 "memory estimation does not support infinite phase duration"
@@ -302,7 +302,7 @@ def _estimate_phase_requests(phase: BasePhaseConfig, concurrency: int) -> int:
 
 def _estimate_phase_duration(phase: BasePhaseConfig, concurrency: int) -> float:
     """Estimate phase duration in seconds."""
-    if phase.duration is not None:
+    if phase.duration is not None and phase.duration != -1:
         return phase.duration
     requests = phase.requests
     if requests is None and phase.sessions is not None:

@@ -143,6 +143,17 @@ class PhaseRunner(TaskManagerMixin):
         # Config values may reflect pre-filtered file size, but dataset_metadata
         # reflects the actual filtered dataset after start/end offset filtering.
         metadata = conversation_source.dataset_metadata
+        if config.adaptive_continuous:
+            session_budget = conversation_source.start_single_pass()
+            self._config = config.model_copy(
+                update={
+                    "expected_num_sessions": min(
+                        config.expected_num_sessions, session_budget
+                    )
+                    if config.expected_num_sessions is not None
+                    else session_budget,
+                }
+            )
         if config.timing_mode == TimingMode.FIXED_SCHEDULE and metadata:
             self._config = config.model_copy(
                 update={

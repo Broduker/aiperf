@@ -348,7 +348,7 @@ class TimingResolver:
             if str(phase.type) == str(PhaseType.FIXED_SCHEDULE):
                 self._validate_fixed_schedule_timing(run, phase.name, phase)
 
-            if phase.duration is None:
+            if phase.duration is None or phase.duration == -1:
                 duration_unknown = True
                 continue
             total += phase.duration

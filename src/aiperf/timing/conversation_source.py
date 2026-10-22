@@ -21,7 +21,9 @@ from dataclasses import dataclass
 from aiperf.common.enums import CacheBustTarget, ConversationBranchMode
 from aiperf.common.models import ConversationMetadata, DatasetMetadata, TurnMetadata
 from aiperf.credit.structs import Credit, TurnToSend
+from aiperf.dataset.dataset_samplers import SequentialSampler, ShuffleSampler
 from aiperf.dataset.protocols import DatasetSamplingStrategyProtocol
+from aiperf.plugin.enums import DatasetSamplingStrategy
 from aiperf.timing.strategies.cache_bust import build_cache_bust_marker
 
 
@@ -199,6 +201,26 @@ class ConversationSource:
     def dataset_metadata(self) -> DatasetMetadata:
         """Dataset metadata."""
         return self._dataset_metadata
+
+    def start_single_pass(self) -> int:
+        """Reset root sampling for one pass; random sampling uses no replacement.
+
+        The caller must enforce the returned session budget, including draining
+        multi-turn sessions. Prefetching the next sample does not spend a session.
+        """
+        roots = [
+            conv.conversation_id
+            for conv in self._dataset_metadata.conversations
+            if conv.is_root
+        ]
+        sampler = (
+            SequentialSampler
+            if self._dataset_metadata.sampling_strategy
+            == DatasetSamplingStrategy.SEQUENTIAL
+            else ShuffleSampler
+        )
+        self._dataset_sampler = sampler(roots)
+        return len(roots)
 
     def _marker_for_session(
         self, conversation_id: str, x_correlation_id: str, *, retain: bool

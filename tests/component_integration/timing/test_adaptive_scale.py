@@ -25,6 +25,68 @@ def _load_jsonl(path: Path) -> list[dict]:
 
 
 @pytest.mark.component_integration
+@pytest.mark.parametrize(
+    "phase_type,control", [("concurrency", "concurrency"), ("user_centric", "users")]
+)
+def test_continuous_adaptive_drains_dataset_once(
+    cli: AIPerfCLI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase_type: str,
+    control: str,
+) -> None:
+    monkeypatch.setattr(
+        FakeTransport, "_DEFAULT_CONFIG", MockServerConfig(ttft=200.0, itl=1.0)
+    )
+    phase_load = (
+        "concurrency: 2" if phase_type == "concurrency" else "users: 2\n      rate: 20"
+    )
+    config_path = tmp_path / "continuous.yaml"
+    config_path.write_text(
+        f"""schemaVersion: "2.0"
+benchmark:
+  model: {defaults.model}
+  endpoint:
+    url: http://localhost:8000
+    type: chat
+    streaming: true
+  dataset:
+    type: synthetic
+    entries: 30
+    turns: 2
+    prompts: {{isl: 32, osl: 1}}
+  phases:
+    - name: profiling
+      kind: profiling
+      type: {phase_type}
+      {phase_load}
+      duration: -1
+      adaptive_scale:
+        enabled: true
+        control: {{variable: {control}, min: 1, max: 2}}
+        assessment_period: 1
+        sustain_duration: 1
+      sla:
+        request_latency:
+          p95:
+            le: 10000
+""",
+        encoding="utf-8",
+    )
+    result = cli.run_sync(
+        f'aiperf profile --config "{config_path}" --extra-inputs ignore_eos:true --ui {defaults.ui}',
+        timeout=90.0,
+    )
+    assert result.exit_code == 0
+    assert result.request_count == 60
+    assert result.json.was_cancelled is False
+    events = _load_jsonl(
+        result.artifacts_dir / "phases/profiling/adaptive_scale_events.jsonl"
+    )
+    assert any(event["event"] == "adaptive_discovery_resumed" for event in events)
+
+
+@pytest.mark.component_integration
 def test_adaptive_scale_profile_writes_controller_artifacts(
     cli: AIPerfCLI, tmp_path: Path
 ) -> None:

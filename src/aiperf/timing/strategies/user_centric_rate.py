@@ -208,6 +208,14 @@ class UserCentricStrategy(AIPerfLoggerMixin):
         )
         self._recompute_turn_gap(num_users)
 
+        if self._config.adaptive_continuous:
+            budget = self._config.expected_num_sessions
+            initial_count = min(num_users, budget) if budget is not None else num_users
+            self._initial_users = [
+                self._generate_next_user(order=index) for index in range(initial_count)
+            ]
+            return
+
         # Session lifetime = time from first to last turn, measured in gaps between turns.
         # Floor at 1 ensures spacing even for single-turn sessions.
         session_lifetime = max(1, session_turns - 1)

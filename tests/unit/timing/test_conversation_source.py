@@ -57,6 +57,19 @@ def src(ds):
 
 
 class TestConversationSource:
+    @pytest.mark.parametrize("sampling", list(DatasetSamplingStrategy))
+    def test_single_pass_resets_and_covers_each_root_once(
+        self, ds: DatasetMetadata, sampling: DatasetSamplingStrategy
+    ) -> None:
+        ds.sampling_strategy = sampling
+        source = _mk_source(ds)
+        source.next()
+        budget = source.start_single_pass()
+        sampled = [source.next().conversation_id for _ in range(budget)]
+        assert sorted(sampled) == ["c1", "c2", "c3"]
+        if sampling == DatasetSamplingStrategy.SEQUENTIAL:
+            assert sampled == ["c1", "c2", "c3"]
+
     def test_next_returns_sampled_session(self, src):
         s = src.next()
         assert isinstance(s, SampledSession)
