@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import aiofiles
 import orjson
@@ -58,15 +58,16 @@ class RawRecordWriterProcessor(BufferedJSONLWriterMixin[RawRecordInfo]):
 
         # Construct output file path: raw_records/raw_records_processor_{id}.jsonl
         output_dir = self.run.cfg.artifacts.dir / OutputDefaults.RAW_RECORDS_FOLDER
-        output_dir.mkdir(parents=True, exist_ok=True)
-
         # Each processor writes to its own file - avoids locking/contention
         # Sanitize service_id for filename (replace special chars)
         safe_id = self.service_id.replace("/", "_").replace(":", "_").replace(" ", "_")
         self._cache_dir = getattr(run.cfg.get_default_dataset(), "cache_dir", None)
-        if self._cache_dir is not None:
-            safe_id = f"{safe_id}_{uuid4().hex}"
-        output_file = output_dir / f"raw_records_{safe_id}.jsonl"
+        output_file = (
+            CacheManager.record_path(run, self.service_id)
+            if self._cache_dir is not None
+            else output_dir / f"raw_records_{safe_id}.jsonl"
+        )
+        output_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize the buffered writer mixin
         super().__init__(
@@ -177,13 +178,12 @@ class RawRecordWriterProcessor(BufferedJSONLWriterMixin[RawRecordInfo]):
                 self._write_error = e
 
     async def _flush_buffer(self, buffer_to_flush: list[bytes]) -> None:
-        """Persist successful results as part of the RAW finalization barrier."""
+        """Flush the sole RAW shard durably before acknowledging completion."""
         await super()._flush_buffer(buffer_to_flush)
         if self._cache_dir is not None and buffer_to_flush:
             try:
-                await asyncio.to_thread(
-                    CacheManager.append_results, self._cache_dir, buffer_to_flush
-                )
+                async with self._file_lock:
+                    await asyncio.to_thread(os.fsync, self._file_handle.fileno())
             except Exception as error:
                 self._buffer = buffer_to_flush + self._buffer
                 self._write_error = error
@@ -227,6 +227,9 @@ class RawRecordAggregator(AIPerfLoggerMixin):
             exporter_config.cfg.artifacts.artifact_directory
             / OutputDefaults.RAW_RECORDS_FOLDER
         )
+        self._cache_dir = getattr(
+            exporter_config.cfg.get_default_dataset(), "cache_dir", None
+        )
 
     def get_export_info(self) -> FileExportInfo:
         return FileExportInfo(
@@ -237,6 +240,12 @@ class RawRecordAggregator(AIPerfLoggerMixin):
     async def export(self) -> None:
         """Aggregate the raw records."""
         if self.exporter_config.cfg.artifacts.export_level != ExportLevel.RAW:
+            return
+
+        if self._cache_dir is not None:
+            if self.exporter_config.run is None:
+                raise ValueError("Recoverable RAW export requires BenchmarkRun")
+            await asyncio.to_thread(self._export_cached_results)
             return
 
         raw_record_files = list(self.output_dir.glob("raw_records_*.jsonl"))
@@ -261,3 +270,14 @@ class RawRecordAggregator(AIPerfLoggerMixin):
             self.output_dir.rmdir()
 
         self.info(f"Aggregated {record_count} raw records to {self.output_file}")
+
+    def _export_cached_results(self) -> None:
+        assert self.exporter_config.run is not None
+        cache = CacheManager(self.exporter_config.run, prepare=False)
+        try:
+            count = cache.export(self.output_file)
+            self.info(
+                f"Exported {count} successful cached records to {self.output_file}"
+            )
+        finally:
+            cache.close()

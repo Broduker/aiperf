@@ -149,6 +149,27 @@ See the [YAML Config Reference](../tutorials/yaml-config.md) for the complete se
 of object-typed CRD fields at storage time, so phase ordering is only
 preserved because it is expressed as a list.
 
+### Recoverable File Datasets
+
+Set `spec.benchmark.datasets[].cache_dir` to retain RAW response shards and a
+disk-backed recovery index across job deletion and resubmission. For example,
+`cache_dir: /data/nbg/aiperf/daily-coding-part5` automatically mounts the
+`aiperf-operator-results` PVC at `/data` in controller and worker services.
+The claim must exist in the job namespace and support the required multi-node
+access. Existing writable PVC mounts are reused; read-only and ephemeral cache
+mounts are rejected. Other cache paths require an explicit PVC mount.
+
+Enable `artifacts.raw: true`, use a sequential `single_turn` file dataset with
+stable explicit `session_id` values, and retain the full input. Each record
+processor writes its own persistent shard rather than uploading another RAW
+copy. A subsequent job using the same cache skips matching successful requests.
+Do not run two jobs against one cache. Keep the cache outside operator-managed
+per-run retention paths; deleting its shards loses the authoritative answers.
+
+Final RAW export automatically includes matching successes from all runs.
+See [Recoverable Synthesis](../tutorials/custom-dataset.md#recoverable-synthesis-with-durable-raw-shards)
+for limits, completeness reports and manual preparation of legacy shards.
+
 ### Plot envelope (`spec.plot`)
 
 Kubernetes preserves the Config-v2 `plot:` envelope field and runs it after

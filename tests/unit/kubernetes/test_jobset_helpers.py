@@ -9,6 +9,7 @@ Kubernetes pod startup, so we verify the exact keys and values produced.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -30,7 +31,60 @@ from aiperf.kubernetes.jobset_helpers import (
     build_shared_volumes,
     build_startup_probe,
     build_volume_mounts,
+    with_cache_volume,
 )
+
+
+def test_cache_volume_defaults_to_operator_pvc_without_mutating_template() -> None:
+    original = PodTemplateConfig()
+    template = with_cache_volume(original, Path("/data/nbg/cache"))
+    assert original.volumes == []
+    assert template.volumes == [
+        {
+            "name": "aiperf-cache-data",
+            "persistentVolumeClaim": {"claimName": "aiperf-operator-results"},
+        }
+    ]
+    assert {"name": "aiperf-cache-data", "mountPath": "/data"} in build_volume_mounts(
+        template
+    )
+    assert template.volumes[0] in build_shared_volumes("example", template)
+
+
+def test_explicit_cache_mount_is_retained_without_duplicate_volumes() -> None:
+    original = PodTemplateConfig(
+        volumes=[
+            {
+                "name": "data",
+                "persistentVolumeClaim": {"claimName": "aiperf-operator-results"},
+            }
+        ],
+        volume_mounts=[{"name": "data", "mountPath": "/data"}],
+    )
+    template = with_cache_volume(original, Path("/data/nbg/cache"))
+    assert template == original
+    assert with_cache_volume(original, None) is original
+
+
+@pytest.mark.parametrize("invalid", ["readonly", "ephemeral", "unmounted"])
+def test_cache_volume_rejects_nonpersistent_or_readonly_paths(invalid: str) -> None:
+    template = PodTemplateConfig()
+    if invalid != "unmounted":
+        template.volumes = [
+            {
+                "name": "data",
+                **(
+                    {"emptyDir": {}}
+                    if invalid == "ephemeral"
+                    else {"persistentVolumeClaim": {"claimName": "data"}}
+                ),
+            }
+        ]
+        template.volume_mounts = [
+            {"name": "data", "mountPath": "/cache", "readOnly": invalid == "readonly"}
+        ]
+    with pytest.raises(ValueError, match="writable|persistentVolumeClaim"):
+        with_cache_volume(template, Path("/cache/results"))
 
 
 class TestBuildSecurityContext:

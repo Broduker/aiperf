@@ -468,13 +468,7 @@ class BenchmarkConfig(BaseConfig, BenchmarkHelpersMixin):
             getattr(dataset, "resume_enabled", False) for dataset in self.datasets
         ):
             return self
-        if (
-            any(
-                getattr(dataset, "cache_dir", None) is not None
-                for dataset in self.datasets
-            )
-            and not self.artifacts.raw
-        ):
+        if not self.artifacts.raw:
             raise ValueError(
                 "cache_dir requires artifacts.raw=true to persist complete results"
             )
@@ -484,19 +478,17 @@ class BenchmarkConfig(BaseConfig, BenchmarkHelpersMixin):
             or self.phases[0].kind != "profiling"
         ):
             raise ValueError(
-                "resume_from requires one dataset and one profiling phase without warmup"
+                "cache_dir requires one dataset and one profiling phase without warmup"
             )
         if self.endpoint.type != "chat" or len(self.get_model_names()) != 1:
-            raise ValueError(
-                "resume_from requires a chat endpoint and exactly one model"
-            )
+            raise ValueError("cache_dir requires a chat endpoint and exactly one model")
         if self.phases[0].type not in {"concurrency", "constant", "poisson", "gamma"}:
-            raise ValueError("resume_from supports concurrency and rate phases only")
+            raise ValueError("cache_dir supports concurrency and rate phases only")
         if self.get_cache_bust_target() != CacheBustTarget.NONE or (
             self.accuracy and self.accuracy.enabled
         ):
             raise ValueError(
-                "resume_from cannot be combined with cache busting or accuracy evaluation"
+                "cache_dir cannot be combined with cache busting or accuracy evaluation"
             )
         return self
 

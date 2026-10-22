@@ -1,12 +1,13 @@
-"""Historical result recovery uses payload identity and disk-backed accounting."""
+"""Recoverable RAW shards use stable payload identity and bounded disk indexing."""
 
-from concurrent.futures import ThreadPoolExecutor
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import orjson
 import pytest
 import zstandard
+from filelock import Timeout
 
 from aiperf.common.models import Conversation, Text, Turn
 from aiperf.common.models.model_endpoint_info import ModelEndpointInfo
@@ -22,10 +23,14 @@ from aiperf.dataset.memory_map_utils import (
     MemoryMapDatasetClient,
 )
 from aiperf.dataset.payload_formatting import format_conversation_payloads
-from aiperf.post_processors.raw_record_writer_processor import RawRecordWriterProcessor
+from aiperf.exporters.exporter_config import ExporterConfig
+from aiperf.post_processors.raw_record_writer_processor import (
+    RawRecordAggregator,
+    RawRecordWriterProcessor,
+)
 
 
-def make_run(tmp_path: Path, sources: list[Path]) -> BenchmarkRun:
+def make_run(tmp_path: Path) -> BenchmarkRun:
     run = _default_test_run()
     source = tmp_path / "input.jsonl"
     source.touch()
@@ -35,10 +40,11 @@ def make_run(tmp_path: Path, sources: list[Path]) -> BenchmarkRun:
             type="file",
             format="single_turn",
             path=source,
-            resume_from=sources,
+            cache_dir=tmp_path / "cache",
         )
     ]
-    run.cfg.artifacts.dir = tmp_path / "new-run"
+    run.cfg.artifacts.dir = tmp_path / "run"
+    run.cfg.artifacts.raw = True
     run.artifact_dir = run.cfg.artifacts.dir
     return run
 
@@ -80,62 +86,52 @@ def raw_record(run: BenchmarkRun, sample: Conversation) -> dict:
     }
 
 
-@pytest.mark.parametrize("compressed", [False, True])
-def test_recovery_matches_payload_success_wins_and_keeps_history(
-    tmp_path: Path, compressed: bool
+def write_shard(run: BenchmarkRun, records: list[dict]) -> Path:
+    path = CacheManager.record_path(run, "historical")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"".join(orjson.dumps(record) + b"\n" for record in records))
+    return path
+
+
+def test_recovery_deduplicates_success_without_copying_response_bodies(
+    tmp_path: Path,
 ) -> None:
-    history = tmp_path / (
-        "raw_records_old.jsonl.zst" if compressed else "raw_records_old.jsonl"
-    )
-    run = make_run(tmp_path, [history])
+    run = make_run(tmp_path)
     good = raw_record(run, conversation())
-    bad = {**good, "error": {"message": "later request failed"}}
-    data = b"\n".join(orjson.dumps(record) for record in [good, bad, good]) + b"\n"
-    history.write_bytes(
-        zstandard.ZstdCompressor().compress(data) if compressed else data
-    )
+    history = write_shard(run, [good, {**good, "error": {"message": "failed"}}, good])
     original = history.read_bytes()
     cache = CacheManager(run)
     try:
-        samples = [
-            conversation(),
-            conversation("sample-2"),
-            conversation("sample-3", "changed"),
-        ]
-        assert [sample.session_id for sample in cache.pending(samples)] == [
-            "sample-2",
-            "sample-3",
-        ]
+        assert [
+            sample.session_id
+            for sample in cache.pending([conversation(), conversation("second")])
+        ] == ["second"]
         cache.save_report()
         assert cache.report.successful_records == 1
         assert cache.report.cached_samples == 1
-        assert cache.report.pending_samples == 2
+        assert cache.report.pending_samples == 1
+        assert cache.report.duplicate_successes == 1
         assert cache.report.ignored_records == 1
-        assert (
-            orjson.loads((cache.directory / "reused.jsonl").read_bytes())[
-                "conversation_id"
-            ]
-            == "sample-1"
-        )
+        reused = orjson.loads((cache.directory / "reused.jsonl").read_bytes())
+        assert reused["source"] == str(history)
         assert history.read_bytes() == original
+        assert not (run.cfg.datasets[0].cache_dir / "results.jsonl").exists()
     finally:
         cache.close()
 
 
 @pytest.mark.parametrize("mutation", ["prompt", "model", "max_tokens", "extra"])
 def test_changed_request_is_never_reused(tmp_path: Path, mutation: str) -> None:
-    history = tmp_path / "raw_records_old.jsonl"
-    run = make_run(tmp_path, [history])
+    run = make_run(tmp_path)
     record = raw_record(run, conversation())
     if mutation == "prompt":
-        record["payload"]["messages"] = [{"role": "user", "content": "other prompt"}]
+        record["payload"]["messages"] = [{"role": "user", "content": "other"}]
     else:
         record["payload"][mutation] = "changed"
-    history.write_bytes(orjson.dumps(record) + b"\n")
+    write_shard(run, [record])
     cache = CacheManager(run)
     try:
-        assert len(list(cache.pending([conversation()]))) == 1
-        assert cache.report.cached_samples == 0
+        assert list(cache.pending([conversation()]))
     finally:
         cache.close()
 
@@ -156,7 +152,7 @@ def test_changed_request_is_never_reused(tmp_path: Path, mutation: str) -> None:
 def test_unsuccessful_or_unsupported_record_is_retried(
     tmp_path: Path, kind: str
 ) -> None:
-    run = make_run(tmp_path, [])
+    run = make_run(tmp_path)
     record = raw_record(run, conversation())
     if kind == "error":
         record["error"] = {"message": "failed"}
@@ -193,7 +189,7 @@ def test_unsuccessful_or_unsupported_record_is_retried(
 
 
 def test_streaming_response_requires_terminal_stop_and_content(tmp_path: Path) -> None:
-    record = raw_record(make_run(tmp_path, []), conversation())
+    record = raw_record(make_run(tmp_path), conversation())
     record["responses"] = [
         {
             "data": orjson.dumps(
@@ -212,233 +208,238 @@ def test_streaming_response_requires_terminal_stop_and_content(tmp_path: Path) -
     assert _successful_payload(record) is None
 
 
-def test_partial_tail_is_not_success_and_malformed_interior_fails(
+def test_incremental_index_restarts_without_reading_unchanged_shards(
     tmp_path: Path,
 ) -> None:
-    history = tmp_path / "raw_records_old.jsonl"
-    run = make_run(tmp_path, [history])
-    history.write_bytes(orjson.dumps(raw_record(run, conversation())))
+    run = make_run(tmp_path)
+    history = write_shard(run, [raw_record(run, conversation())])
+    cache = CacheManager(run)
+    cache.close()
     cache = CacheManager(run)
     try:
-        assert cache.report.incomplete_tails == 1
-        assert len(list(cache.pending([conversation()]))) == 1
+        assert cache.report.scanned_records == 0
+        assert not list(cache.pending([conversation()]))
     finally:
         cache.close()
+    with history.open("ab") as output:
+        output.write(orjson.dumps(raw_record(run, conversation("second"))) + b"\n")
+    cache = CacheManager(run)
+    try:
+        assert cache.report.scanned_records == 1
+        assert not list(cache.pending([conversation(), conversation("second")]))
+    finally:
+        cache.close()
+
+
+def test_index_rebuild_and_unterminated_tail_do_not_modify_shards(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path)
+    history = write_shard(run, [raw_record(run, conversation())])
+    with history.open("ab") as output:
+        output.write(b'{"partial":')
+    original = history.read_bytes()
+    cache = CacheManager(run)
+    assert cache.report.incomplete_tails == 1
+    cache.close()
+    (run.cfg.datasets[0].cache_dir / "index.sqlite3").unlink()
+    cache = CacheManager(run)
+    try:
+        assert not list(cache.pending([conversation()]))
+        assert history.read_bytes() == original
+    finally:
+        cache.close()
+
+
+@pytest.mark.parametrize("change", ["missing", "truncated", "replaced"])
+def test_missing_or_modified_shards_fail_closed(tmp_path: Path, change: str) -> None:
+    run = make_run(tmp_path)
+    history = write_shard(run, [raw_record(run, conversation())])
+    CacheManager(run).close()
+    if change == "missing":
+        history.unlink()
+    elif change == "truncated":
+        history.write_bytes(b"")
+    else:
+        replacement = history.with_suffix(".replacement")
+        replacement.write_bytes(history.read_bytes())
+        replacement.replace(history)
+    with pytest.raises(ValueError, match="missing|truncated|replaced"):
+        CacheManager(run)
+
+
+def test_invalid_complete_record_fails_and_active_jobs_are_exclusive(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path)
+    cache = CacheManager(run)
+    try:
+        with pytest.raises(Timeout):
+            CacheManager(run)
+    finally:
+        cache.close()
+    history = write_shard(run, [])
     history.write_bytes(b"{broken}\n")
     with pytest.raises(ValueError, match="Invalid RAW JSON"):
         CacheManager(run)
 
 
-def test_duplicate_input_ids_rejected(tmp_path: Path) -> None:
-    history = tmp_path / "raw_records_old.jsonl"
-    history.write_bytes(b"")
-    cache = CacheManager(make_run(tmp_path, [history]))
+def test_duplicate_input_and_missing_explicit_id_are_rejected(tmp_path: Path) -> None:
+    run = make_run(tmp_path)
+    cache = CacheManager(run)
     try:
         with pytest.raises(ValueError, match="Duplicate session_id"):
             list(cache.pending([conversation(), conversation()]))
     finally:
         cache.close()
+    run.cfg.datasets[0].path.write_bytes(b'{"text":"hello"}\n')
+    with pytest.raises(ValueError, match="explicit non-empty session_id"):
+        SingleTurnDatasetLoader(
+            run=run, filename=run.cfg.datasets[0].path
+        ).load_dataset()
 
 
-def test_persistent_cache_imports_history_and_resumes_in_same_directory(
+def test_removed_resume_from_and_unsupported_cache_configs_are_rejected(
     tmp_path: Path,
 ) -> None:
-    run = make_run(tmp_path, [])
-    run.cfg.datasets[0].cache_dir = tmp_path / "cache"
-    run.cfg.datasets[0].resume_from = [run.cfg.artifacts.dir]
-    run.cfg.artifacts.dir.mkdir()
-    history = run.cfg.artifacts.dir / "raw_records_old.jsonl"
-    first = raw_record(run, conversation())
-    history.write_bytes(orjson.dumps(first) + b"\n")
-    cache = CacheManager(run)
-    try:
-        assert [
-            sample.session_id
-            for sample in cache.pending([conversation(), conversation("second")])
-        ] == ["second"]
-        reused = orjson.loads((cache.directory / "reused.jsonl").read_bytes())
-        assert reused["source"] == str(tmp_path / "cache/results.jsonl")
-    finally:
-        cache.close()
-    second = raw_record(run, conversation("second"))
-    CacheManager.append_results(tmp_path / "cache", [orjson.dumps(second)])
-    history.unlink()
-    run.cfg.datasets[0].resume_from = []
-    cache = CacheManager(run)
-    try:
-        assert list(cache.pending([conversation(), conversation("second")])) == []
-        assert cache.report.cached_samples == 2
-        results = [
-            orjson.loads(line)
-            for line in (tmp_path / "cache/results.jsonl").read_bytes().splitlines()
-        ]
-        assert results == [first, second]
-    finally:
-        cache.close()
-
-
-def test_persistent_cache_recovers_interrupted_append_and_rebuilds_index(
-    tmp_path: Path,
-) -> None:
-    run = make_run(tmp_path, [])
-    directory = tmp_path / "cache"
-    first = orjson.dumps(raw_record(run, conversation())) + b"\n"
-    second = orjson.dumps(raw_record(run, conversation("second"))) + b"\n"
-    CacheManager.append_results(directory, [first])
-    with (directory / "results.jsonl").open("ab") as output:
-        output.write(second + b'{"partial":')
-    CacheManager.append_results(directory, [first, second])
-    assert (directory / "results.jsonl").read_bytes() == first + second
-    (directory / "results.sqlite3").unlink()
-    CacheManager.append_results(directory, [first, second])
-    assert (directory / "results.jsonl").read_bytes() == first + second
-
-
-def test_concurrent_cache_writers_deduplicate_success_and_retry_changed_payload(
-    tmp_path: Path,
-) -> None:
-    run = make_run(tmp_path, [])
-    directory = tmp_path / "cache"
-    good = raw_record(run, conversation())
-    failed = {**good, "error": {"message": "failed"}}
-    changed = raw_record(run, conversation(text="different request"))
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        list(
-            executor.map(
-                lambda _: CacheManager.append_results(
-                    directory, map(orjson.dumps, [good, failed, changed])
-                ),
-                range(8),
-            )
+    with pytest.raises(ValueError, match="Extra inputs"):
+        FileDataset(
+            name="default", type="file", path=tmp_path / "input", resume_from=[tmp_path]
         )
-    assert [
-        orjson.loads(line)
-        for line in (directory / "results.jsonl").read_bytes().splitlines()
-    ] == [good, changed]
-    run.cfg.datasets[0].cache_dir = directory
-    cache = CacheManager(run)
-    try:
-        assert list(cache.pending([conversation(text="uncached prompt")]))
-    finally:
-        cache.close()
-
-
-def test_cache_dir_enforces_recovery_constraints_without_resume_from(
-    tmp_path: Path,
-) -> None:
-    run = make_run(tmp_path, [])
-    run.cfg.datasets[0].cache_dir = tmp_path / "cache"
+    with pytest.raises(ValueError, match="path-backed single_turn"):
+        FileDataset(
+            name="default",
+            type="file",
+            records=[{"text": "hello"}],
+            cache_dir=tmp_path / "cache",
+        )
+    with pytest.raises(ValueError, match="absolute path"):
+        FileDataset(
+            name="default",
+            type="file",
+            path=tmp_path / "input",
+            cache_dir=Path("relative"),
+        )
+    run = make_run(tmp_path)
+    run.cfg.artifacts.raw = False
     with pytest.raises(ValueError, match="artifacts.raw"):
         run.cfg.validate_result_cache_resume()
     run.cfg.artifacts.raw = True
     run.cfg.phases.append(run.cfg.phases[0].model_copy(update={"name": "second"}))
     with pytest.raises(ValueError, match="one dataset and one profiling phase"):
         run.cfg.validate_result_cache_resume()
-    with pytest.raises(ValueError, match="absolute path"):
-        FileDataset(
-            name="default",
-            type="file",
-            path=tmp_path / "input.jsonl",
-            cache_dir=Path("relative"),
-        )
 
 
-async def test_raw_writer_appends_persistent_answers_and_preserves_prior_staging(
+async def test_multiple_processors_write_only_independent_persistent_shards(
     tmp_path: Path,
 ) -> None:
-    run = make_run(tmp_path, [])
-    run.cfg.datasets[0].cache_dir = tmp_path / "cache"
-    run.cfg.artifacts.raw = True
+    run = make_run(tmp_path)
     first = RawRecordWriterProcessor(service_id="processor", run=run)
-    await first._open_file()
-    good = orjson.dumps(raw_record(run, conversation()))
-    await first._flush_buffer([good])
     second = RawRecordWriterProcessor(service_id="processor", run=run)
     assert first.output_file != second.output_file
+    assert first.output_file.is_relative_to(run.cfg.datasets[0].cache_dir / "records")
+    await first._open_file()
     await second._open_file()
+    good = orjson.dumps(raw_record(run, conversation()))
+    other = orjson.dumps(raw_record(run, conversation("second")))
     try:
-        other = orjson.dumps(raw_record(run, conversation("second")))
-        await second._flush_buffer([good, other])
-        assert (
-            tmp_path / "cache/results.jsonl"
-        ).read_bytes() == good + b"\n" + other + b"\n"
+        with patch(
+            "aiperf.post_processors.raw_record_writer_processor.os.fsync",
+            wraps=os.fsync,
+        ) as fsync:
+            await first._flush_buffer([good])
+            await second._flush_buffer([good, other])
+            assert fsync.call_count == 2
         assert first.output_file.read_bytes() == good + b"\n"
+        assert second.output_file.read_bytes() == good + b"\n" + other + b"\n"
+        assert not (run.cfg.artifacts.dir / "raw_records").exists()
+        cache = CacheManager(run)
+        try:
+            assert not list(cache.pending([conversation(), conversation("second")]))
+        finally:
+            cache.close()
     finally:
-        await second._close_file()
         await first._close_file()
+        await second._close_file()
 
 
-async def test_persistent_write_failure_is_retried_before_finalization(
+async def test_shard_fsync_failure_is_retried_before_finalization(
     tmp_path: Path,
 ) -> None:
-    run = make_run(tmp_path, [])
-    run.cfg.datasets[0].cache_dir = tmp_path / "cache"
-    run.cfg.artifacts.raw = True
+    run = make_run(tmp_path)
     writer = RawRecordWriterProcessor(service_id="processor", run=run)
     await writer._open_file()
     good = orjson.dumps(raw_record(run, conversation()))
     try:
         with (
-            patch.object(
-                CacheManager, "append_results", side_effect=OSError("disk unavailable")
+            patch(
+                "aiperf.post_processors.raw_record_writer_processor.os.fsync",
+                side_effect=OSError("disk unavailable"),
             ),
             pytest.raises(OSError, match="disk unavailable"),
         ):
             await writer._flush_buffer([good])
         assert writer._buffer == [good]
         await writer.flush_buffer()
-        assert (tmp_path / "cache/results.jsonl").read_bytes() == good + b"\n"
+        assert writer._write_error is None
     finally:
         await writer._close_file()
 
 
-def test_missing_explicit_id_rejected_by_loader(tmp_path: Path) -> None:
-    run = make_run(tmp_path, [tmp_path / "old"])
-    run.cfg.datasets[0].path.write_bytes(b'{"text":"hello"}\n')
-    loader = SingleTurnDatasetLoader(run=run, filename=run.cfg.datasets[0].path)
-    with pytest.raises(ValueError, match="explicit non-empty session_id"):
-        loader.load_dataset()
-
-
-def test_resume_requires_supported_dataset_and_single_phase(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="path-backed single_turn"):
-        FileDataset(
-            name="default",
-            type="file",
-            records=[{"text": "hello"}],
-            resume_from=[tmp_path],
+async def test_final_export_joins_all_runs_filters_payload_and_reports_missing(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path)
+    first = raw_record(run, conversation())
+    write_shard(run, [first, raw_record(run, conversation("outside"))])
+    cache = CacheManager(run)
+    try:
+        assert [
+            sample.session_id
+            for sample in cache.pending(
+                [conversation(), conversation("second"), conversation("missing")]
+            )
+        ] == ["second", "missing"]
+        cache.save_report()
+        second = raw_record(run, conversation("second"))
+        write_shard(run, [second, first, raw_record(run, conversation(text="changed"))])
+        exporter = RawRecordAggregator(
+            ExporterConfig(results=None, cfg=run.cfg, telemetry_results=None, run=run)
         )
-    run = make_run(tmp_path, [tmp_path / "old"])
-    run.cfg.phases.append(run.cfg.phases[0].model_copy(update={"name": "second"}))
-    with pytest.raises(ValueError, match="one dataset and one profiling phase"):
-        run.cfg.validate_result_cache_resume()
+        await exporter.export()
+        results = [
+            orjson.loads(line)
+            for line in exporter.output_file.read_bytes().splitlines()
+        ]
+        assert results == [first, second]
+        report = orjson.loads((cache.directory / "export_report.json").read_bytes())
+        assert report["missing_samples"] == 1
+        assert report["complete"] is False
+        assert (
+            len(list((run.cfg.datasets[0].cache_dir / "records").rglob("*.jsonl"))) == 2
+        )
+    finally:
+        cache.close()
 
 
 @pytest.mark.parametrize("all_cached", [True, False])
 @pytest.mark.parametrize("compressed", [False, True])
-@pytest.mark.parametrize("persistent", [True, False])
 async def test_manager_writes_only_pending_and_handles_empty_mmap(
-    tmp_path: Path, all_cached: bool, compressed: bool, persistent: bool
+    tmp_path: Path, all_cached: bool, compressed: bool
 ) -> None:
-    history = tmp_path / "raw_records_old.jsonl"
-    run = make_run(tmp_path, [history])
+    run = make_run(tmp_path)
     run.cfg.datasets[0].path.write_bytes(
         b'{"session_id":"sample-1","text":"hello"}\n'
         b'{"session_id":"sample-2","text":"hello"}\n'
     )
     samples = list(CustomDatasetComposer(run=run, tokenizer=None).iter_conversations())
-    history.write_bytes(
-        b"".join(
-            orjson.dumps(raw_record(run, sample)) + b"\n"
+    write_shard(
+        run,
+        [
+            raw_record(run, sample)
             for sample in (samples if all_cached else samples[:1])
-        )
+        ],
     )
-    if persistent:
-        run.cfg.datasets[0].cache_dir = tmp_path / "cache"
-        CacheManager.append_results(
-            tmp_path / "cache", history.read_bytes().splitlines()
-        )
-        run.cfg.datasets[0].resume_from = []
     manager = DatasetManager(run=run)
     manager._compress_only = compressed
     manager.publish = AsyncMock()
@@ -465,11 +466,6 @@ async def test_manager_writes_only_pending_and_handles_empty_mmap(
                     target.write_bytes(compressed_file.read())
         with MemoryMapDatasetClient(data_path, index_path) as client:
             assert client.index.conversation_ids == ([] if all_cached else ["sample-2"])
-        report = orjson.loads(
-            (run.cfg.artifacts.dir / "result_cache/report.json").read_bytes()
-        )
-        assert report["cached_samples"] == (2 if all_cached else 1)
-        assert report["pending_samples"] == (0 if all_cached else 1)
     finally:
         await manager._close_cache_manager()
         await manager._backing_store._cleanup()
@@ -483,9 +479,10 @@ async def test_manager_streams_bounded_batches_with_optional_recovery(
     resume: bool,
     streaming: bool,
 ) -> None:
-    history = tmp_path / "raw_records_old.jsonl"
-    run = make_run(tmp_path, [history] if resume else [])
+    run = make_run(tmp_path)
     dataset = run.cfg.datasets[0]
+    if not resume:
+        dataset.cache_dir = None
     dataset.streaming = streaming
     dataset.streaming_batch_size = 2
     dataset.path.write_bytes(
@@ -495,11 +492,8 @@ async def test_manager_streams_bounded_batches_with_optional_recovery(
         )
     )
     samples = list(CustomDatasetComposer(run=run, tokenizer=None).iter_conversations())
-    history.write_bytes(
-        b"".join(
-            orjson.dumps(raw_record(run, sample)) + b"\n" for sample in samples[:4]
-        )
-    )
+    if resume:
+        write_shard(run, [raw_record(run, sample) for sample in samples[:4]])
     manager = DatasetManager(run=run)
     manager.publish = AsyncMock()
     if resume:
@@ -553,9 +547,7 @@ async def test_shared_stream_rejects_invalid_recovery_identity(
     tmp_path: Path,
     session_ids: list[str | None],
 ) -> None:
-    history = tmp_path / "raw_records_old.jsonl"
-    history.touch()
-    run = make_run(tmp_path, [history])
+    run = make_run(tmp_path)
     run.cfg.datasets[0].streaming_batch_size = 1
     run.cfg.datasets[0].path.write_bytes(
         b"".join(
@@ -579,8 +571,9 @@ async def test_shared_stream_rejects_invalid_recovery_identity(
 async def test_ordinary_stream_keeps_grouped_sessions_and_rejects_empty_input(
     tmp_path: Path,
 ) -> None:
-    run = make_run(tmp_path, [])
+    run = make_run(tmp_path)
     dataset = run.cfg.datasets[0]
+    dataset.cache_dir = None
     dataset.streaming = True
     dataset.streaming_batch_size = 1
     dataset.path.write_bytes(

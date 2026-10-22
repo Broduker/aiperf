@@ -47,6 +47,9 @@ async def upload_raw_records(run: BenchmarkRun, logger: _UploadLogger) -> None:
     cfg = run.cfg
     if cfg.artifacts.export_level != ExportLevel.RAW:
         return
+    if getattr(cfg.get_default_dataset(), "cache_dir", None) is not None:
+        logger.debug("Recoverable RAW shards are already durable on the shared volume")
+        return
 
     raw_records_dir = cfg.artifacts.dir / OutputDefaults.RAW_RECORDS_FOLDER
     if not raw_records_dir.exists():

@@ -296,24 +296,18 @@ class FileDataset(SystemPromptMixin):
 
     name: _DatasetName
 
-    resume_from: list[Path] = Field(
-        default_factory=list,
-        description="Historical RAW JSONL files or directories used to skip successful single-turn requests. "
-        "Matches explicit session_id and the complete request payload; failures are retried. "
-        "Supports plain and zstd-compressed RAW exports. Paths must be mounted in the dataset manager.",
-    )
-
     cache_dir: Path | None = Field(
         default=None,
-        description="Persistent single-turn result cache directory. Successful full RAW records are "
-        "deduplicated and appended to results.jsonl and reused on restart. Requires artifacts.raw=true. "
-        "Use an absolute path mounted at the same location in dataset-manager and record-processor pods.",
+        description="Persistent single-turn RAW shards and recovery index directory. "
+        "Requires artifacts.raw=true and an absolute path shared by all services. "
+        "Kubernetes paths under /data default to the aiperf-operator-results PVC. "
+        "Successful requests are reused by session_id and complete request payload.",
     )
 
     @property
     def resume_enabled(self) -> bool:
         """Whether historical results should filter this dataset."""
-        return bool(self.resume_from or self.cache_dir is not None)
+        return self.cache_dir is not None
 
     @model_validator(mode="after")
     def _validate_result_resume(self) -> FileDataset:
@@ -323,12 +317,14 @@ class FileDataset(SystemPromptMixin):
             or self.sampling != DatasetSamplingStrategy.SEQUENTIAL
         ):
             raise ValueError(
-                "resume_from/cache_dir requires a path-backed single_turn dataset with sequential sampling"
+                "cache_dir requires a path-backed single_turn dataset with sequential sampling"
             )
         if self.cache_dir is not None and not self.cache_dir.is_absolute():
             raise ValueError(
                 "cache_dir must be an absolute path shared by all services"
             )
+        if self.cache_dir is not None and ".." in self.cache_dir.parts:
+            raise ValueError("cache_dir must not contain parent traversal components")
         return self
 
     type: Annotated[

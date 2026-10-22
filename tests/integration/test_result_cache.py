@@ -12,6 +12,7 @@ import yaml
 from aiperf.common import random_generator as rng
 from aiperf.common.models.model_endpoint_info import ModelEndpointInfo
 from aiperf.config import BenchmarkConfig, BenchmarkRun
+from aiperf.dataset.cache_manager import CacheManager
 from aiperf.dataset.composer.custom import CustomDatasetComposer
 from aiperf.dataset.payload_formatting import format_conversation_payloads
 from tests.harness.utils import AIPerfCLI, AIPerfMockServer
@@ -26,26 +27,22 @@ async def recovery_server(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize(
-    "resume,all_cached", [(False, False), (True, False), (True, True)]
-)
+@pytest.mark.parametrize("cached_count", [0, 1, 2])
+@pytest.mark.parametrize("workers", [1, 2])
 @pytest.mark.parametrize("continuous", [False, True])
-@pytest.mark.parametrize("persistent", [False, True])
-async def test_streaming_run_with_optional_recovery(
+async def test_resumed_run_sends_only_pending_requests(
     cli: AIPerfCLI,
     recovery_server: AIPerfMockServer,
     tmp_path: Path,
     temp_output_dir: Path,
-    all_cached: bool,
-    resume: bool,
+    cached_count: int,
+    workers: int,
     continuous: bool,
-    persistent: bool,
 ) -> None:
     source = tmp_path / "input.jsonl"
     source.write_bytes(
         b'{"session_id":"one","text":"hello"}\n{"session_id":"two","text":"hello"}\n'
     )
-    history = tmp_path / "raw_records_history.jsonl"
     benchmark = {
         "models": ["test-model"],
         "tokenizer": {"name": "builtin"},
@@ -60,8 +57,7 @@ async def test_streaming_run_with_optional_recovery(
                 "type": "file",
                 "format": "single_turn",
                 "path": str(source),
-                "resume_from": [str(history)] if resume else [],
-                "streaming": not resume,
+                "cache_dir": str(temp_output_dir / "persistent"),
             }
         ],
         "phases": [
@@ -72,7 +68,7 @@ async def test_streaming_run_with_optional_recovery(
                 "requests": 50,
             }
         ],
-        "runtime": {"ui": "none", "workers": 1},
+        "runtime": {"ui": "none", "workers": workers, "record_processors": workers},
         "artifacts": {"raw": True, "auto_plot": False},
     }
     if continuous:
@@ -83,13 +79,12 @@ async def test_streaming_run_with_optional_recovery(
             adaptive_sustain_duration=1,
             sla={"request_latency": {"avg": {"le": 10000}}},
         )
-        benchmark["datasets"][0]["streaming"] = True
-    if persistent:
-        benchmark["datasets"][0]["cache_dir"] = str(temp_output_dir / "persistent")
     cfg = BenchmarkConfig.model_validate(benchmark)
     run = BenchmarkRun(
         benchmark_id="cache-fixture", cfg=cfg, artifact_dir=temp_output_dir
     )
+    history = CacheManager.record_path(run, "history")
+    history.parent.mkdir(parents=True, exist_ok=True)
     rng.reset()
     rng.init(42)
     samples = list(CustomDatasetComposer(run=run, tokenizer=None).iter_conversations())
@@ -101,6 +96,11 @@ async def test_streaming_run_with_optional_recovery(
             orjson.dumps(
                 {
                     "metadata": {
+                        "session_num": 0,
+                        "request_start_ns": 1,
+                        "request_end_ns": 2,
+                        "worker_id": "historical-worker",
+                        "record_processor_id": "historical-processor",
                         "conversation_id": session_id,
                         "turn_index": 0,
                         "benchmark_phase": "profiling",
@@ -109,6 +109,7 @@ async def test_streaming_run_with_optional_recovery(
                     "payload": payload,
                     "responses": [
                         {
+                            "perf_ns": 2,
                             "text": orjson.dumps(
                                 {
                                     "choices": [
@@ -119,13 +120,13 @@ async def test_streaming_run_with_optional_recovery(
                                         }
                                     ]
                                 }
-                            ).decode()
+                            ).decode(),
                         }
                     ],
                 }
             )
             + b"\n"
-            for session_id, _, payload in (payloads if all_cached else payloads[:1])
+            for session_id, _, payload in payloads[:cached_count]
         )
     )
     config = tmp_path / "resume.yaml"
@@ -140,33 +141,26 @@ async def test_streaming_run_with_optional_recovery(
         f'aiperf profile --config "{config}" --tokenizer builtin', timeout=90
     )
     assert result.exit_code == 0
-    if resume or persistent:
-        assert result.request_count == ((0 if all_cached else 1) if resume else 2)
-        report = orjson.loads(
-            (temp_output_dir / "result_cache/report.json").read_bytes()
-        )
-        assert report["cached_samples"] == ((2 if all_cached else 1) if resume else 0)
-        assert report["pending_samples"] == ((0 if all_cached else 1) if resume else 2)
-    else:
-        assert result.request_count == (2 if continuous else 50)
-        assert not (temp_output_dir / "result_cache").exists()
-    if persistent:
-        results_file = temp_output_dir / "persistent/results.jsonl"
-        results = [
-            orjson.loads(line) for line in results_file.read_bytes().splitlines()
-        ]
-        assert {record["metadata"]["conversation_id"] for record in results} == {
-            "one",
-            "two",
-        }
-        assert len(results) == 2
-        original = results_file.read_bytes()
-        benchmark["datasets"][0]["resume_from"] = []
-        history.unlink()
-        config.write_text(yaml.safe_dump({"benchmark": benchmark}))
-        resumed = await cli.run(
-            f'aiperf profile --config "{config}" --tokenizer builtin', timeout=90
-        )
-        assert resumed.exit_code == 0
-        assert resumed.request_count == 0
-        assert results_file.read_bytes() == original
+    assert result.request_count == 2 - cached_count
+    report = orjson.loads((temp_output_dir / "result_cache/report.json").read_bytes())
+    assert report["cached_samples"] == cached_count
+    assert report["pending_samples"] == 2 - cached_count
+    results_file = temp_output_dir / "profile_export_raw.jsonl"
+    results = [orjson.loads(line) for line in results_file.read_bytes().splitlines()]
+    assert {record["metadata"]["conversation_id"] for record in results} == {
+        "one",
+        "two",
+    }
+    assert len(results) == 2
+    original = results_file.read_bytes()
+    assert history.exists()
+    assert not (temp_output_dir / "persistent/results.jsonl").exists()
+    assert not (temp_output_dir / "raw_records").exists()
+    benchmark["phases"][0]["concurrency"] = 2
+    config.write_text(yaml.safe_dump({"benchmark": benchmark}))
+    resumed = await cli.run(
+        f'aiperf profile --config "{config}" --tokenizer builtin', timeout=90
+    )
+    assert resumed.exit_code == 0
+    assert resumed.request_count == 0
+    assert results_file.read_bytes() == original

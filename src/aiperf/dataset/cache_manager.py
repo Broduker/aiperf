@@ -5,14 +5,13 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+from collections import OrderedDict
 from collections.abc import Iterable, Iterator
-from contextlib import closing
-from io import BufferedReader
 from pathlib import Path
 from typing import Any, BinaryIO
+from uuid import uuid4
 
 import orjson
-import zstandard
 from filelock import FileLock
 
 from aiperf.common.models import Conversation
@@ -118,287 +117,284 @@ def _record_identity(record: Any) -> tuple[str, str] | None:
 
 
 class CacheManager:
-    """Index historical successes on disk and select pending conversations.
+    """Recover durable RAW shards using a disk-only success index.
 
-    Work runs on the dataset preparation thread. Only IDs, hashes and source
-    references live in SQLite; response bodies are never retained in memory.
+    Only preparation and final export update the index. Record processors write
+    independent append-only shards; they never write SQLite or another copy of
+    the response body. All synchronous methods run on service I/O threads.
     """
 
-    def __init__(self, run: BenchmarkRun) -> None:
+    def __init__(self, run: BenchmarkRun, *, prepare: bool = True) -> None:
         self.run = run
-        self.report = CacheReport()
-        self.cache_dir = run.cfg.get_default_dataset().cache_dir
+        cache_dir = run.cfg.get_default_dataset().cache_dir
+        if cache_dir is None:
+            raise ValueError("CacheManager requires cache_dir")
+        self.cache_dir = cache_dir.expanduser().resolve()
+        self.records_dir = self.cache_dir / "records"
+        self.records_dir.mkdir(parents=True, exist_ok=True)
         self.directory = run.cfg.artifacts.dir / "result_cache"
         self.directory.mkdir(parents=True, exist_ok=True)
-        (self.directory / "reused.jsonl").write_bytes(b"")
-        self.database = sqlite3.connect(
-            self.directory / "index.sqlite3", check_same_thread=False
-        )
-        self.database.execute("PRAGMA cache_size=-8192")
-        self.database.execute(
-            "CREATE TABLE IF NOT EXISTS successes (id TEXT, fingerprint TEXT, source TEXT, line INTEGER, PRIMARY KEY(id, fingerprint))"
-        )
-        self.database.execute("CREATE TABLE IF NOT EXISTS inputs (id TEXT PRIMARY KEY)")
-        self.database.execute("DELETE FROM successes")
-        self.database.execute("DELETE FROM inputs")
+        self.report = CacheReport()
+        self._lease = FileLock(self.cache_dir / "active.lock", thread_local=False)
+        self.database: sqlite3.Connection | None = None
+        self.index: sqlite3.Connection | None = None
         try:
-            self._index_sources()
+            if prepare:
+                self._lease.acquire(timeout=0)
+            self.database = sqlite3.connect(
+                self.directory / "index.sqlite3", check_same_thread=False
+            )
+            self.database.execute("PRAGMA cache_size=-8192")
+            if prepare:
+                self.database.execute("DROP TABLE IF EXISTS inputs")
+                self.database.execute(
+                    "CREATE TABLE inputs (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, ordinal INTEGER UNIQUE)"
+                )
+                self.database.commit()
+                (self.directory / "reused.jsonl").write_bytes(b"")
+            self.index = sqlite3.connect(
+                self.cache_dir / "index.sqlite3", check_same_thread=False
+            )
+            self.index.execute("PRAGMA cache_size=-8192")
+            self.index.execute(
+                "CREATE TABLE IF NOT EXISTS successes (id TEXT, fingerprint TEXT, source TEXT, "
+                "offset INTEGER, length INTEGER, line INTEGER, PRIMARY KEY(id, fingerprint))"
+            )
+            self.index.execute(
+                "CREATE TABLE IF NOT EXISTS shards (source TEXT PRIMARY KEY, offset INTEGER, "
+                "line INTEGER, device INTEGER, inode INTEGER)"
+            )
+            self.index.commit()
+            self.refresh()
         except BaseException:
             self.close()
             raise
 
-    def _index_sources(self) -> None:
-        dataset = self.run.cfg.get_default_dataset()
-        files: set[Path] = set()
-        for source in dataset.resume_from:
-            source = source.expanduser().resolve(strict=True)
-            candidates = (
-                [source]
-                if source.is_file()
-                else [
-                    path
-                    for path in source.rglob("*")
-                    if path.is_file()
-                    and (
-                        path.name.startswith("raw_records_")
-                        or path.name == "profile_export_raw.jsonl"
-                        or path.name == "profile_export_raw.jsonl.zst"
-                    )
-                    and (
-                        path.name.endswith(".jsonl") or path.name.endswith(".jsonl.zst")
-                    )
-                ]
-            )
-            if not candidates:
-                raise ValueError(f"No RAW JSONL files found in resume_from: {source}")
-            files.update(candidates)
-        current = self.run.cfg.artifacts.dir.resolve()
-        results = (
-            self.cache_dir.resolve() / "results.jsonl"
-            if self.cache_dir is not None
-            else None
-        )
-        if results is not None:
-            if results == dataset.path.expanduser().resolve():
-                raise ValueError(
-                    "cache_dir results.jsonl must not be the input dataset"
-                )
-            self.append_results(results.parent, [])
-            files.discard(results)
-        for path in sorted(files):
-            if (
-                results is None and path.is_relative_to(current)
-            ) or path == dataset.path.expanduser().resolve():
-                raise ValueError(
-                    "resume_from must not include the current artifact directory"
-                )
-            size_bytes = path.stat().st_size
-            self.report.sources.append(
-                CacheSource(path=str(path), size_bytes=size_bytes)
-            )
-            opener = zstandard.open if path.suffix == ".zst" else open
-            with opener(path, "rb") as handle, BufferedReader(handle) as buffered:
-                self._index_file(path, buffered, size_bytes)
-            if path.suffix == ".zst" and path.stat().st_size != size_bytes:
-                raise ValueError(
-                    f"Compressed recovery source changed during indexing: {path}"
-                )
-        if results is not None:
-            size_bytes = results.stat().st_size
-            self.report.sources.append(
-                CacheSource(path=str(results), size_bytes=size_bytes)
-            )
-            with closing(sqlite3.connect(results.parent / "results.sqlite3")) as index:
-                self.database.executemany(
-                    "INSERT OR REPLACE INTO successes VALUES (?, ?, ?, ?)",
-                    (
-                        (session_id, fingerprint, str(results), line)
-                        for session_id, fingerprint, line in index.execute(
-                            "SELECT id, fingerprint, line FROM records"
-                        )
-                    ),
-                )
-        self.database.commit()
-        self.report.successful_records = self.database.execute(
-            "SELECT count(*) FROM successes"
-        ).fetchone()[0]
-
-    def _index_file(self, path: Path, handle: BinaryIO, size_bytes: int) -> None:
-        imported: list[bytes] = []
-        imported_bytes = 0
-        for line_number, line, record in self._read_records(path, handle, size_bytes):
-            identity = _record_identity(record)
-            if identity is None:
-                self.report.ignored_records += 1
-                continue
-            cursor = self.database.execute(
-                "INSERT OR IGNORE INTO successes VALUES (?, ?, ?, ?)",
-                (*identity, str(path), line_number),
-            )
-            self.report.duplicate_successes += cursor.rowcount == 0
-            if self.cache_dir is not None:
-                imported.append(line)
-                imported_bytes += len(line)
-                if imported_bytes >= 8 * 1024 * 1024 or len(imported) >= 128:
-                    self.append_results(self.cache_dir, imported)
-                    imported = []
-                    imported_bytes = 0
-        if imported:
-            self.append_results(self.cache_dir, imported)
-
-    def _read_records(
-        self, path: Path, handle: BinaryIO, size_bytes: int
-    ) -> Iterator[tuple[int, bytes, dict[str, Any]]]:
-        remaining = size_bytes if path.suffix != ".zst" else None
-        line_number = 0
-        while remaining is None or remaining > 0:
-            line = (
-                handle.readline() if remaining is None else handle.readline(remaining)
-            )
-            if not line:
-                if remaining:
-                    raise ValueError(
-                        f"Recovery source truncated during indexing: {path}"
-                    )
-                break
-            line_number += 1
-            if remaining is not None:
-                remaining -= len(line)
-            if not line.endswith(b"\n"):
-                self.report.incomplete_tails += 1
-                break
-            if not line.strip():
-                continue
-            try:
-                record = orjson.loads(line)
-            except orjson.JSONDecodeError as error:
-                raise ValueError(f"Invalid RAW JSON at {path}:{line_number}") from error
-            self.report.scanned_records += 1
-            if not isinstance(record, dict):
-                raise ValueError(
-                    f"RAW record must be an object at {path}:{line_number}"
-                )
-            yield line_number, line, record
-
     @staticmethod
-    def append_results(directory: Path, records: Iterable[bytes]) -> None:
-        """Append unique successful RAW records under a cross-process lock.
+    def record_path(run: BenchmarkRun, service_id: str) -> Path:
+        """Allocate a unique durable shard, including across processor restarts."""
+        directory = run.cfg.get_default_dataset().cache_dir
+        if directory is None:
+            raise ValueError("Durable RAW records require cache_dir")
+        generation = hashlib.sha256(run.benchmark_id.encode()).hexdigest()[:16]
+        safe_id = service_id.replace("/", "_").replace(":", "_").replace(" ", "_")
+        return (
+            directory
+            / "records"
+            / generation
+            / f"raw_records_{safe_id}_{uuid4().hex}.jsonl"
+        )
 
-        The JSONL is authoritative. SQLite holds only identities and an indexed
-        byte boundary; complete writes made before an interrupted transaction are
-        replayed on the next append. Only an incomplete final line is truncated.
-        Call from an I/O thread, never directly from a service event loop.
-        """
-        directory = directory.resolve()
-        directory.mkdir(parents=True, exist_ok=True)
-        with FileLock(directory / "results.lock", timeout=60):
-            database = sqlite3.connect(directory / "results.sqlite3")
-            try:
-                database.execute("PRAGMA cache_size=-8192")
-                database.execute(
-                    "CREATE TABLE IF NOT EXISTS records (id TEXT, fingerprint TEXT, line INTEGER, PRIMARY KEY(id, fingerprint))"
+    def refresh(self) -> None:
+        """Index only new complete lines, leaving interrupted tails untouched."""
+        assert self.index is not None
+        with FileLock(self.cache_dir / "index.lock", timeout=60):
+            paths = sorted(self.records_dir.rglob("*.jsonl"))
+            present = {str(path.relative_to(self.cache_dir)) for path in paths}
+            known = {row[0] for row in self.index.execute("SELECT source FROM shards")}
+            if missing := known - present:
+                raise ValueError(
+                    f"Durable result shards are missing: {sorted(missing)}"
                 )
-                database.execute(
-                    "CREATE TABLE IF NOT EXISTS boundary (offset INTEGER NOT NULL, lines INTEGER NOT NULL)"
-                )
-                row = database.execute("SELECT offset, lines FROM boundary").fetchone()
-                if row is None:
-                    database.execute("INSERT INTO boundary VALUES (0, 0)")
-                offset = row[0] if row else 0
-                line_number = row[1] if row else 0
-                output = directory / "results.jsonl"
-                with output.open("a+b") as handle:
-                    handle.seek(0, os.SEEK_END)
-                    if handle.tell() < offset:
-                        raise ValueError(
-                            f"Persistent result cache was truncated: {output}"
-                        )
-                    handle.seek(offset)
-                    while line := handle.readline():
-                        if not line.endswith(b"\n"):
-                            handle.truncate(offset)
-                            break
-                        identity = _record_identity(orjson.loads(line))
-                        if identity is None:
-                            raise ValueError(
-                                f"Invalid persistent result at {output}:{offset}"
-                            )
-                        line_number += 1
-                        database.execute(
-                            "INSERT OR IGNORE INTO records VALUES (?, ?, ?)",
-                            (*identity, line_number),
-                        )
-                        offset = handle.tell()
-                    handle.seek(0, os.SEEK_END)
-                    for line in records:
-                        identity = _record_identity(orjson.loads(line))
-                        if identity is None:
-                            continue
-                        cursor = database.execute(
-                            "INSERT OR IGNORE INTO records VALUES (?, ?, ?)",
-                            (*identity, line_number + 1),
-                        )
-                        if cursor.rowcount:
-                            handle.write(line.rstrip(b"\n") + b"\n")
-                            line_number += 1
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                    database.execute(
-                        "UPDATE boundary SET offset=?, lines=?",
-                        (handle.tell(), line_number),
-                    )
-                    database.commit()
-            finally:
-                database.close()
+            for path in paths:
+                self._index_shard(path)
+            self.index.commit()
+            self.report.successful_records = self.index.execute(
+                "SELECT count(*) FROM successes"
+            ).fetchone()[0]
+
+    def _index_shard(self, path: Path) -> None:
+        assert self.index is not None
+        source = str(path.relative_to(self.cache_dir))
+        snapshot = path.stat()
+        if path.resolve() != path.absolute() or path.is_symlink():
+            raise ValueError(f"Durable result shard must not be a symlink: {path}")
+        if (
+            path.resolve()
+            == self.run.cfg.get_default_dataset().path.expanduser().resolve()
+        ):
+            raise ValueError("The input dataset must not be stored among result shards")
+        row = self.index.execute(
+            "SELECT offset, line, device, inode FROM shards WHERE source=?", (source,)
+        ).fetchone()
+        if snapshot.st_size == 0 and row is None:
+            return
+        offset, line_number = row[:2] if row else (0, 0)
+        if row and (snapshot.st_size < offset or snapshot.st_ino != row[3]):
+            raise ValueError(f"Durable result shard was truncated or replaced: {path}")
+        self.report.sources.append(
+            CacheSource(path=str(path), size_bytes=snapshot.st_size)
+        )
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            while offset < snapshot.st_size:
+                line = handle.readline(snapshot.st_size - offset)
+                if not line or not line.endswith(b"\n"):
+                    self.report.incomplete_tails += 1
+                    break
+                line_number += 1
+                self._index_line(source, offset, line_number, line)
+                offset += len(line)
+        self.index.execute(
+            "INSERT OR REPLACE INTO shards VALUES (?, ?, ?, ?, ?)",
+            (source, offset, line_number, snapshot.st_dev, snapshot.st_ino),
+        )
+
+    def _index_line(
+        self, source: str, offset: int, line_number: int, line: bytes
+    ) -> None:
+        assert self.index is not None
+        if not line.strip():
+            return
+        try:
+            record = orjson.loads(line)
+        except orjson.JSONDecodeError as error:
+            raise ValueError(f"Invalid RAW JSON at {source}:{line_number}") from error
+        self.report.scanned_records += 1
+        if not isinstance(record, dict):
+            raise ValueError(f"RAW record must be an object at {source}:{line_number}")
+        identity = _record_identity(record)
+        if identity is None:
+            self.report.ignored_records += 1
+            return
+        cursor = self.index.execute(
+            "INSERT OR IGNORE INTO successes VALUES (?, ?, ?, ?, ?, ?)",
+            (*identity, source, offset, len(line), line_number),
+        )
+        self.report.duplicate_successes += cursor.rowcount == 0
 
     def pending(self, conversations: Iterable[Conversation]) -> Iterator[Conversation]:
-        """Yield only unmatched samples, rejecting grouped or duplicate IDs."""
+        """Yield current samples without a matching durable successful request."""
+        assert self.database is not None and self.index is not None
         endpoint = ModelEndpointInfo.from_run(self.run)
         with (self.directory / "reused.jsonl").open("ab") as reused:
             for conversation in conversations:
                 if len(conversation.turns) != 1:
                     raise ValueError(
-                        "resume_from requires exactly one turn per explicit session_id"
+                        "cache_dir requires exactly one turn per explicit session_id"
                     )
+                _, _, payload = next(
+                    format_conversation_payloads([conversation], endpoint)
+                )
+                fingerprint = payload_fingerprint(payload)
                 try:
                     self.database.execute(
-                        "INSERT INTO inputs VALUES (?)", (conversation.session_id,)
+                        "INSERT INTO inputs VALUES (?, ?, ?)",
+                        (
+                            conversation.session_id,
+                            fingerprint,
+                            self.report.total_samples,
+                        ),
                     )
                 except sqlite3.IntegrityError as error:
                     raise ValueError(
                         f"Duplicate session_id in recovery input: {conversation.session_id!r}"
                     ) from error
-                _, _, payload = next(
-                    format_conversation_payloads([conversation], endpoint)
-                )
-                row = self.database.execute(
+                row = self.index.execute(
                     "SELECT source, line FROM successes WHERE id=? AND fingerprint=?",
-                    (conversation.session_id, payload_fingerprint(payload)),
+                    (conversation.session_id, fingerprint),
                 ).fetchone()
                 self.report.total_samples += 1
-                if row is not None:
+                if row is None:
+                    self.report.pending_samples += 1
+                    yield conversation
+                else:
                     self.report.cached_samples += 1
                     reused.write(
                         orjson.dumps(
                             {
                                 "conversation_id": conversation.session_id,
-                                "source": row[0],
+                                "source": str(self.cache_dir / row[0]),
                                 "line": row[1],
                             }
                         )
                         + b"\n"
                     )
-                else:
-                    self.report.pending_samples += 1
-                    yield conversation
 
     def save_report(self) -> None:
-        """Persist recovery accounting without changing historical files."""
+        """Persist preparation accounting and the current input selection."""
+        assert self.database is not None
         self.database.commit()
         temporary = self.directory / "report.json.tmp"
         temporary.write_bytes(self.report.model_dump_json(indent=2).encode())
         temporary.replace(self.directory / "report.json")
 
+    def export(self, output: Path) -> int:
+        """Atomically export one success per current input, in input order.
+
+        Shards remain the authoritative recovery data. Exporting creates a final
+        delivery file only after execution, rather than duplicating every write.
+        Missing current samples are explicitly counted in the export report.
+        """
+        assert self.database is not None and self.index is not None
+        self.index.execute(
+            "ATTACH DATABASE ? AS current_run", (str(self.directory / "index.sqlite3"),)
+        )
+        temporary = output.with_name(f".{output.name}.{uuid4().hex}.tmp")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        exported = 0
+        missing = 0
+        handles: OrderedDict[str, BinaryIO] = OrderedDict()
+        query: sqlite3.Cursor | None = None
+        try:
+            query = self.index.execute(
+                "SELECT inputs.id, inputs.fingerprint, successes.source, successes.offset, successes.length "
+                "FROM current_run.inputs LEFT JOIN successes "
+                "ON inputs.id=successes.id AND inputs.fingerprint=successes.fingerprint ORDER BY inputs.ordinal"
+            )
+            with temporary.open("wb") as target:
+                for session_id, fingerprint, source, offset, length in query:
+                    if source is None:
+                        missing += 1
+                        continue
+                    shard = handles.pop(source, None)
+                    if shard is None:
+                        if len(handles) >= 32:
+                            handles.popitem(last=False)[1].close()
+                        shard = (self.cache_dir / source).open("rb")
+                    handles[source] = shard
+                    shard.seek(offset)
+                    line = shard.read(length)
+                    if len(line) != length or _record_identity(orjson.loads(line)) != (
+                        session_id,
+                        fingerprint,
+                    ):
+                        raise ValueError(
+                            f"Durable result changed before export: {source}:{offset}"
+                        )
+                    target.write(line)
+                    exported += 1
+                target.flush()
+                os.fsync(target.fileno())
+            temporary.replace(output)
+            report = self.directory / "export_report.json"
+            report.write_bytes(
+                orjson.dumps(
+                    {
+                        "total_samples": exported + missing,
+                        "successful_samples": exported,
+                        "missing_samples": missing,
+                        "complete": missing == 0,
+                        "output": str(output),
+                    },
+                    option=orjson.OPT_INDENT_2,
+                )
+            )
+            return exported
+        finally:
+            if query is not None:
+                query.close()
+            for shard in handles.values():
+                shard.close()
+            temporary.unlink(missing_ok=True)
+            self.index.execute("DETACH DATABASE current_run")
+
     def close(self) -> None:
-        """Release the preparation-only SQLite connection."""
-        self.database.close()
+        """Release preparation/export connections and the active-run lease."""
+        if self.database is not None:
+            self.database.close()
+            self.database = None
+        if self.index is not None:
+            self.index.close()
+            self.index = None
+        self._lease.release()

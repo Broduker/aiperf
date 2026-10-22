@@ -120,6 +120,7 @@ async def test_kubernetes_upload_requires_controller_url(tmp_path) -> None:
     run.cfg.artifacts.dir = tmp_path
     run.cfg.runtime.service_run_type = ServiceRunType.KUBERNETES
     run.cfg.runtime.dataset_api_base_url = None
+    run.cfg.get_default_dataset.return_value = SimpleNamespace(cache_dir=None)
 
     with pytest.raises(RuntimeError, match="Cannot determine controller API URL"):
         await upload_raw_records(run, MagicMock())
@@ -130,5 +131,16 @@ async def test_no_materialized_files_is_valid_after_exact_finalize(tmp_path) -> 
     run = MagicMock()
     run.cfg.artifacts.export_level = ExportLevel.RAW
     run.cfg.artifacts.dir = tmp_path
+    run.cfg.get_default_dataset.return_value = SimpleNamespace(cache_dir=None)
 
     await upload_raw_records(run, MagicMock())
+
+
+@pytest.mark.asyncio
+async def test_durable_shards_do_not_upload_a_second_raw_copy(tmp_path) -> None:
+    run = MagicMock()
+    run.cfg.artifacts.export_level = ExportLevel.RAW
+    run.cfg.get_default_dataset.return_value = SimpleNamespace(cache_dir=tmp_path)
+    with patch("aiperf.workers.worker_pod_upload.aiohttp.ClientSession") as session:
+        await upload_raw_records(run, MagicMock())
+        session.assert_not_called()

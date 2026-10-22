@@ -413,6 +413,8 @@ class KubernetesDeployment(AIPerfBaseModel):
 
     def get_jobset_spec(self) -> AIPerfJobSetSpec:
         """Get the JobSet spec."""
+        from aiperf.kubernetes.jobset_helpers import with_cache_volume
+
         extra_annotations: dict[str, str] = {}
         if self.model_names:
             extra_annotations[Annotations.MODEL] = ", ".join(self.model_names)
@@ -433,7 +435,10 @@ class KubernetesDeployment(AIPerfBaseModel):
             record_processors_per_pod=self.config.benchmark.runtime.record_processors_per_pod,
             ttl_seconds=self.deployment.ttl_seconds_after_finished,
             keep_failed_pods=self.deployment.keep_failed_pods,
-            pod_template=self.deployment.pod_template,
+            pod_template=with_cache_volume(
+                self.deployment.pod_template,
+                getattr(self.run.cfg.get_default_dataset(), "cache_dir", None),
+            ),
             scheduling=self.deployment.scheduling,
             gpu_telemetry_enabled=self.run.cfg.gpu_telemetry.enabled,
             server_metrics_enabled=self.run.cfg.server_metrics.enabled,

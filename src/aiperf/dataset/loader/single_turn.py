@@ -111,7 +111,7 @@ class SingleTurnDatasetLoader(BaseFileLoader, MediaConversionMixin):
             single_turn_data = SingleTurn.model_validate(record_dict)
             if requires_session_ids and not single_turn_data.session_id:
                 raise ValueError(
-                    "resume_from requires an explicit non-empty session_id on every input record"
+                    "cache_dir requires an explicit non-empty session_id on every input record"
                 )
             session_id = single_turn_data.session_id or self.session_id_generator.next()
             yield session_id, single_turn_data

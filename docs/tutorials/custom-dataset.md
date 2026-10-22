@@ -53,10 +53,11 @@ curl -s http://localhost:8000/v1/chat/completions \
 
 ## Single-Turn Datasets
 
-### Resume completed synthesis requests
+### Recoverable synthesis with durable RAW shards
 
-For a long-running synthesis job, set `resume_from` on a path-backed
-`single_turn` dataset to reuse successful requests from earlier RAW exports:
+Set `cache_dir` on a sequential, path-backed `single_turn` dataset to persist
+responses once and resume incomplete work. Reuse the same directory on every
+submission; no separate history-source option is needed.
 
 ```yaml
 benchmark:
@@ -70,119 +71,99 @@ benchmark:
       format: single_turn
       path: /data/input.jsonl
       sampling: sequential
-      resume_from:
-        - /data/previous-run
-        - /data/other-run/raw_records_worker_0.jsonl.zst
+      cache_dir: /data/nbg/aiperf/my-dataset
   phases:
     - name: profiling
       type: concurrency
       concurrency: 32
       requests: 1000000
   artifacts:
-    dir: /data/resumed-run
     raw: true
 ```
 
-Every input row must have a unique, explicit `session_id` and represent one
-independent turn. Recovery scans plain or zstd-compressed RAW JSONL files,
-including `raw_records_*.jsonl[.zst]` files below supplied directories. It streams
-input and stores the success index in SQLite on disk. It bypasses the mmap
-dataset cache so changes in history cannot reuse an outdated filtered dataset.
+Each input row must have a unique explicit `session_id` and represent one
+independent turn. Use the full converted input on every restart, not a manually
+filtered remaining-input file. A cache hit requires the same ID and complete
+request payload, including model, messages, streaming and generation settings.
+Only profiling records with HTTP 200, no error, terminal `finish_reason: stop`
+and nonempty content for every choice are reused. Failures, empty answers,
+truncation and changed requests remain pending.
 
-A hit requires the same `session_id` **and complete request body** (model,
-messages, stream setting, generation parameters and extra fields). A historical
-profiling record must have HTTP 200, no error, `finish_reason: stop`, and nonempty
-text for every requested choice. Failed, empty, truncated, unsupported or missing
-results are retried. One successful duplicate wins over later failures. Invalid
-complete JSONL records fail preparation; an unterminated last line is excluded.
-For active plain JSONL writers, only complete lines within the initial file size
-are considered. Compressed files must be closed before use.
+#### Persistent storage
+
+Every record processor writes a uniquely named append-only RAW JSONL shard
+under `cache_dir/records/`. These shards are the authoritative response data,
+not disposable temporary files. They include failures for diagnosis; successful
+responses are not copied into an additional live `results.jsonl`.
+
+`cache_dir/index.sqlite3` stores successful identities, relative shard paths,
+byte ranges and incremental scan checkpoints. Only dataset preparation and final
+export update this index; workers never concurrently write the database.
+Preparation scans only complete lines added since the previous checkpoint.
+An interrupted final line is ignored and left untouched, and a new processor
+always starts a new shard. A missing index can be rebuilt from the shards.
+Missing, replaced or truncated indexed shards fail recovery rather than silently
+claiming that their answers are available.
+
+RAW batch and periodic flushes synchronize shards to disk. Requests whose
+responses were still buffered when a pod disappeared may be sent again.
+The index is derived from persisted records, so it cannot mark an unpersisted
+answer as completed. Use a separate cache directory for each logical dataset.
+A cross-process lease rejects simultaneous preparation of two jobs using the
+same directory; stop all old writers before handing it to a new job. The volume
+must support reliable filesystem locking and SQLite transactions.
+
+#### Kubernetes storage
+
+For `cache_dir` under `/data`, JobSet generation automatically mounts the
+`aiperf-operator-results` PVC at `/data` in controller and worker service
+containers. The claim must exist in the job namespace and permit the required
+multi-node access. Existing writable PVC mounts are reused rather than
+duplicated. Paths outside `/data` require an explicitly configured writable PVC
+mount. An emptyDir or read-only mount covering the cache is rejected.
+
+Workers write shards directly to this PVC and do not upload a second RAW copy
+to the controller. Deleting the job or its pods does not delete these files.
+The cache should be outside operator-managed per-run result directories so
+result retention does not reap recovery data.
+
+#### Automatic final export
+
+After processors flush their shards, AIPerf refreshes the index and automatically
+writes `profile_export_raw.jsonl` in the artifact directory (or the configured
+prefixed RAW filename). This export includes matching successes from all runs,
+one per current input sample and in input order. It is written to a temporary
+file and atomically replaced; source shards remain available for future recovery.
+There is no manual merge. This terminal delivery file does use additional disk
+space, unlike live execution, which writes each response only once.
+
+The output is AIPerf RAW format, not a dataset-specific business schema.
+`result_cache/export_report.json` records total, successful and missing sample
+counts and an explicit `complete` flag. Missing samples are not silently
+reported as complete. `result_cache/report.json` and `reused.jsonl` describe
+preparation-time reuse, separately from fresh-run performance metrics.
 
 Recovery supports one chat model, one sequential file dataset and one profiling
 concurrency or rate phase, including adaptive scale. Warmup, accuracy evaluation
-and cache busting cannot be combined with recovery. The phase sends at most one
-pass of pending samples; a smaller request/session cap or duration can stop it
-earlier. An all-cached input completes with zero requests. Adaptive discovery
-starts afresh; historical performance statistics are not merged into this run.
+and cache busting are not supported. An all-cached input sends zero requests.
+Each run makes at most one pass over pending samples; request caps or duration
+can stop it earlier. Retry remaining failures by submitting the same input and
+cache directory again. Historical throughput and latency are not merged into
+the new run.
 
-The artifact directory contains `result_cache/report.json` with scanned,
-unique, duplicate, ignored, reused and pending counts, plus
-`result_cache/reused.jsonl` mapping reused IDs to historical file and line.
-Historical outputs stay in place and must be retained alongside new RAW output
-for downstream synthesis merging. Paths must be readable by the dataset manager;
-on Kubernetes mount the history PVC there and create a new `AIPerfJob` with a new
-artifact directory. Freeze or stop an old writer before a final handover if
-duplicate work after the snapshot is unacceptable.
+#### Existing results
 
-### Continue writing a persistent result file
-
-Set `cache_dir` to keep complete successful responses in one durable JSONL file,
-similar to EvalScope prediction caching. It works on the first run without
-`resume_from`; subsequent runs reuse the same cache directory automatically:
-
-```yaml
-benchmark:
-  models: [my-model]
-  endpoint:
-    type: chat
-    urls: [http://localhost:8000/v1/chat/completions]
-  datasets:
-    - name: main
-      type: file
-      format: single_turn
-      path: /data/input.jsonl
-      sampling: sequential
-      cache_dir: /data/synthesis/cache
-      resume_from: [/data/previous-run]
-  phases:
-    - name: profiling
-      type: concurrency
-      concurrency: 32
-      requests: 1000000
-  artifacts:
-    dir: /data/synthesis/run
-    raw: true
-```
-
-`cache_dir/results.jsonl` contains complete successful **RAW records**, including
-request payloads and responses, from history and the current run. New successes
-are appended during periodic RAW flushes and at finalization; they do not wait
-for a manual merge. HTTP failures, empty answers and truncated generations are
-not cached. One record per `(session_id, request-body fingerprint)` is retained;
-changing a prompt or generation parameters creates a distinct result. Output is
-in completion/import order, not input order. This is an AIPerf RAW export, not
-the original dataset's business-specific output schema.
-
-When `resume_from` is supplied, successful history is streamed into this file.
-After import, history files are no longer needed for cached answers. Remove
-`resume_from` on later runs to avoid scanning them again. To cover an entire
-original dataset, supply its full converted input and import all earlier result
-directories, including successes excluded from an old `remaining.jsonl` snapshot.
-
-The artifact directory may also be reused in this mode. RAW processors use
-unique staging filenames so initialization cannot truncate historical inputs.
-Per-run reports and performance exports can be replaced; `cache_dir` holds the
-durable synthesis answers. Recovery reports remain preparation-time accounting,
-and historical performance statistics are not included in new-run metrics.
-
-The disk-backed SQLite index stores IDs, fingerprints and a byte checkpoint,
-never response bodies in memory. Restarts read this index rather than scanning
-all historical response text again. Appends are serialized with a file lock across
-record processors. After interruption, complete unindexed lines are recovered
-and an incomplete final line is removed before appending. Keep `results.jsonl`
-and its SQLite index together; a missing index can be rebuilt from the JSONL.
-Use a dedicated cache directory for each logical dataset. The filesystem must
-support cross-process file locking and SQLite transactions. Do not run two
-independent jobs against the same cache: they can both schedule the same pending
-sample even though successful output is deduplicated.
-
-On Kubernetes, `cache_dir` must be an absolute PVC path mounted at the same
-location in the dataset-manager and every record-processor pod, rather than the
-pod-local `/results` directory. Stop the old job and flush its records before
-handover, retain the PVC, then recreate the job with the same cache directory
-and the desired concurrency configuration. Deleting a Kubernetes job alone does
-not implement recovery. Finishing one pass also does not guarantee all samples
-succeeded: restart against the same cache to retry remaining failures.
+Legacy results are imported manually, not through a `resume_from` parameter.
+After stopping and flushing an old job, place its immutable plain RAW JSONL
+files under `cache_dir/records/` with unique names. On the same filesystem,
+moving or hard-linking the files avoids copying their response bodies.
+Compressed exports must first be decompressed into plain JSONL shards.
+Include every historical batch needed by the full input. Do not import both
+a final aggregated export and its source shards unless duplicate scanning is
+acceptable; success lookup and final export still deduplicate by request identity.
+Neither an old `results.sqlite3` nor an old `results.jsonl` outside `records/`
+is automatically used. After this one-time preparation, only `cache_dir` is
+needed on future submissions.
 
 Each line represents one independent single-turn request.
 

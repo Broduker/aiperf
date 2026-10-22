@@ -2,13 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for aiperf.kubernetes.resources module."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 from pytest import param
 
 from aiperf.common.redact import REDACTED_VALUE
+from aiperf.config.dataset import FileDataset
 from aiperf.config.deployment import DeploymentConfig, PodTemplateConfig
-from aiperf.kubernetes.constants import Annotations
+from aiperf.kubernetes.constants import Annotations, Containers
 from aiperf.kubernetes.resources import (
     CONFIGMAP_MAX_SIZE_BYTES,
     DNS_LABEL_MAX_LENGTH,
@@ -495,6 +498,42 @@ class TestKubernetesDeployment:
             run=sample_run,
             deployment=DeploymentConfig(image="aiperf:latest"),
         )
+
+    def test_cache_mount_reaches_all_controller_and_worker_services(
+        self, sample_config, sample_run
+    ) -> None:
+        sample_run.cfg.datasets = [
+            FileDataset(
+                name="default",
+                type="file",
+                path=Path("/data/input.jsonl"),
+                cache_dir=Path("/data/cache/task"),
+            )
+        ]
+        deployment = KubernetesDeployment(
+            namespace="bench-ns",
+            job_id="cache-mount",
+            config=sample_config,
+            run=sample_run,
+            deployment=DeploymentConfig(image="aiperf:latest"),
+        )
+        manifest = deployment.get_jobset_spec().to_k8s_manifest()
+        for job in manifest["spec"]["replicatedJobs"]:
+            pod = job["template"]["spec"]["template"]["spec"]
+            assert {
+                "name": "aiperf-cache-data",
+                "persistentVolumeClaim": {"claimName": "aiperf-operator-results"},
+            } in pod["volumes"]
+            services = [
+                container
+                for container in pod["containers"]
+                if container["name"] != Containers.RESULTS_SIDECAR
+            ]
+            assert services
+            for container in services:
+                assert {"name": "aiperf-cache-data", "mountPath": "/data"} in container[
+                    "volumeMounts"
+                ]
 
     def test_namespace_is_required(self, sample_config) -> None:
         """The model never invents a namespace, so it refuses to be built without one.

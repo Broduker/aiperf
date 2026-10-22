@@ -10,6 +10,7 @@ reused and tested without constructing a full JobSet spec.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from aiperf.common.aiperf_logger import AIPerfLogger
@@ -22,6 +23,48 @@ from aiperf.config.deployment import (
 from aiperf.kubernetes.environment import K8sEnvironment
 
 _logger = AIPerfLogger(__name__)
+
+
+def with_cache_volume(
+    pod_template: PodTemplateConfig, cache_dir: Path | None
+) -> PodTemplateConfig:
+    """Mount durable cache storage identically in controller and worker pods."""
+    if cache_dir is None:
+        return pod_template
+    template = pod_template.model_copy(deep=True)
+    cache_path = cache_dir.expanduser()
+    mounts = [
+        mount
+        for mount in template.volume_mounts
+        if cache_path.is_relative_to(Path(mount["mountPath"]))
+    ]
+    if mounts:
+        mount = max(mounts, key=lambda item: len(item["mountPath"]))
+        volume = next(
+            (item for item in template.volumes if item["name"] == mount["name"]), {}
+        )
+        if mount.get("readOnly") or volume.get("persistentVolumeClaim", {}).get(
+            "readOnly"
+        ):
+            raise ValueError("cache_dir requires a writable PVC mount")
+        if "persistentVolumeClaim" not in volume:
+            raise ValueError("cache_dir must be backed by a persistentVolumeClaim")
+        return template
+    if not cache_path.is_relative_to(Path("/data")):
+        raise ValueError(
+            "cache_dir outside /data requires an explicit writable PVC mount"
+        )
+    volume_name = "aiperf-cache-data"
+    if any(volume["name"] == volume_name for volume in template.volumes):
+        raise ValueError(f"Reserved cache volume name is already used: {volume_name}")
+    template.volumes.append(
+        {
+            "name": volume_name,
+            "persistentVolumeClaim": {"claimName": "aiperf-operator-results"},
+        }
+    )
+    template.volume_mounts.append({"name": volume_name, "mountPath": "/data"})
+    return template
 
 
 @lru_cache(maxsize=256)
