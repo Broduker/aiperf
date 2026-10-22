@@ -18,8 +18,10 @@ class BaseDatasetSampler(ABC):
     using rng.derive() with a unique identifier (e.g., "dataset.sampler.random_choice").
     """
 
-    def __init__(self, conversation_ids: list[str], **kwargs) -> None:
-        if not conversation_ids:
+    def __init__(
+        self, conversation_ids: list[str], *, allow_empty: bool = False, **kwargs
+    ) -> None:
+        if not conversation_ids and not allow_empty:
             raise ValueError("conversation_ids cannot be empty")
         self._conversation_ids = list(conversation_ids)
 
@@ -56,6 +58,8 @@ class SequentialSampler(BaseDatasetSampler):
         self._index: int = 0
 
     def next_conversation_id(self) -> str:
+        if not self._conversation_ids:
+            raise StopIteration("No pending conversations")
         if self._index >= len(self._conversation_ids):
             self._index = 0
         conversation_id = self._conversation_ids[self._index]

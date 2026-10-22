@@ -237,6 +237,8 @@ class MemoryMapDatasetBackingStore(AIPerfLifecycleMixin):
     async def finalize(self) -> None:
         """Finalize by closing data file and writing index.
 
+        Empty datasets retain one padding byte so clients can map the data file.
+
         Raises:
             RuntimeError: If already finalized
         """
@@ -245,6 +247,9 @@ class MemoryMapDatasetBackingStore(AIPerfLifecycleMixin):
                 "MemoryMapDatasetBackingStore.finalize called twice; the data file "
                 "and index are already written and cannot be re-finalized."
             )
+
+        if not self._session_ids:
+            await self._write_bytes(b"\0")
 
         index = MemoryMapDatasetIndex(
             conversation_ids=self._session_ids,

@@ -100,9 +100,26 @@ class SingleTurnDatasetLoader(BaseFileLoader, MediaConversionMixin):
         data: dict[str, list[SingleTurn]] = defaultdict(list)
         for record_dict in self._iter_record_dicts():
             single_turn_data = SingleTurn.model_validate(record_dict)
+            if (
+                getattr(self.run.cfg.get_default_dataset(), "resume_from", None)
+                and not single_turn_data.session_id
+            ):
+                raise ValueError(
+                    "resume_from requires an explicit non-empty session_id on every input record"
+                )
             session_id = single_turn_data.session_id or self.session_id_generator.next()
             data[session_id].append(single_turn_data)
         return data
+
+    def iter_resume_conversations(self) -> Iterator[Conversation]:
+        """Stream explicit, independent samples; the disk index checks uniqueness."""
+        for record in self._iter_record_dicts():
+            sample = SingleTurn.model_validate(record)
+            if not sample.session_id:
+                raise ValueError(
+                    "resume_from requires an explicit non-empty session_id on every input record"
+                )
+            yield self.convert_to_conversations({sample.session_id: [sample]})[0]
 
     def convert_to_conversations(
         self, data: dict[str, list[SingleTurn]]

@@ -626,6 +626,47 @@ class ConversationMetadata(AIPerfBaseModel):
     )
 
 
+class CacheSource(AIPerfBaseModel):
+    """A historical RAW file and its recovery snapshot boundary."""
+
+    path: str = Field(description="Historical RAW file retained in place.")
+    size_bytes: int = Field(ge=0, description="File size observed before indexing.")
+
+
+class CacheReport(AIPerfBaseModel):
+    """Recovery accounting, separate from fresh-run performance metrics."""
+
+    sources: list[CacheSource] = Field(
+        default_factory=list, description="Historical RAW files and snapshot sizes."
+    )
+    successful_records: int = Field(
+        default=0, ge=0, description="Unique successful ID and payload pairs indexed."
+    )
+    scanned_records: int = Field(
+        default=0, ge=0, description="Complete nonblank RAW records scanned."
+    )
+    duplicate_successes: int = Field(
+        default=0, ge=0, description="Repeated successful ID and payload pairs."
+    )
+    ignored_records: int = Field(
+        default=0, ge=0, description="Unsuccessful or unsupported RAW records."
+    )
+    incomplete_tails: int = Field(
+        default=0, ge=0, description="Unterminated JSONL tails excluded from recovery."
+    )
+    total_samples: int = Field(
+        default=0, ge=0, description="Current input samples inspected."
+    )
+    cached_samples: int = Field(
+        default=0,
+        ge=0,
+        description="Current samples with a verified historical success.",
+    )
+    pending_samples: int = Field(
+        default=0, ge=0, description="Current samples requiring execution."
+    )
+
+
 class DatasetMetadata(AIPerfBaseModel):
     """Metadata of a dataset's structure.
 
@@ -638,6 +679,10 @@ class DatasetMetadata(AIPerfBaseModel):
     conversations: list[ConversationMetadata] = Field(
         default_factory=list,
         description="The conversation metadata of the dataset.",
+    )
+    result_cache: CacheReport | None = Field(
+        default=None,
+        description="Historical result reuse accounting; conversations contains pending samples only.",
     )
     sampling_strategy: DatasetSamplingStrategy = Field(
         ...,

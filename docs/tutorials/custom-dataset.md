@@ -53,6 +53,67 @@ curl -s http://localhost:8000/v1/chat/completions \
 
 ## Single-Turn Datasets
 
+### Resume completed synthesis requests
+
+For a long-running synthesis job, set `resume_from` on a path-backed
+`single_turn` dataset to reuse successful requests from earlier RAW exports:
+
+```yaml
+benchmark:
+  models: [my-model]
+  endpoint:
+    type: chat
+    urls: [http://localhost:8000/v1/chat/completions]
+  datasets:
+    - name: main
+      type: file
+      format: single_turn
+      path: /data/input.jsonl
+      sampling: sequential
+      resume_from:
+        - /data/previous-run
+        - /data/other-run/raw_records_worker_0.jsonl.zst
+  phases:
+    - name: profiling
+      type: concurrency
+      concurrency: 32
+      requests: 1000000
+  artifacts:
+    dir: /data/resumed-run
+    raw: true
+```
+
+Every input row must have a unique, explicit `session_id` and represent one
+independent turn. Recovery scans plain or zstd-compressed RAW JSONL files,
+including `raw_records_*.jsonl[.zst]` files below supplied directories. It streams
+input and stores the success index in SQLite on disk. It bypasses the mmap
+dataset cache so changes in history cannot reuse an outdated filtered dataset.
+
+A hit requires the same `session_id` **and complete request body** (model,
+messages, stream setting, generation parameters and extra fields). A historical
+profiling record must have HTTP 200, no error, `finish_reason: stop`, and nonempty
+text for every requested choice. Failed, empty, truncated, unsupported or missing
+results are retried. One successful duplicate wins over later failures. Invalid
+complete JSONL records fail preparation; an unterminated last line is excluded.
+For active plain JSONL writers, only complete lines within the initial file size
+are considered. Compressed files must be closed before use.
+
+Recovery supports one chat model, one sequential file dataset and one profiling
+concurrency or rate phase, including adaptive scale. Warmup, accuracy evaluation
+and cache busting cannot be combined with recovery. The phase sends at most one
+pass of pending samples; a smaller request/session cap or duration can stop it
+earlier. An all-cached input completes with zero requests. Adaptive discovery
+starts afresh; historical performance statistics are not merged into this run.
+
+The new artifact directory contains `result_cache/report.json` with scanned,
+unique, duplicate, ignored, reused and pending counts, plus
+`result_cache/reused.jsonl` mapping reused IDs to historical file and line.
+Historical outputs stay in place and must be retained alongside new RAW output
+for downstream synthesis merging. Paths must be readable by the dataset manager;
+on Kubernetes mount the history PVC there and create a new `AIPerfJob` with a new
+artifact directory. Freeze or stop an old writer before a final handover if
+duplicate work after the snapshot is unacceptable.
+
 Each line represents one independent single-turn request.
 
 ### When to Use

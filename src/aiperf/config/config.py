@@ -460,6 +460,35 @@ class BenchmarkConfig(BaseConfig, BenchmarkHelpersMixin):
         return parse_datasets_input(v)
 
     @model_validator(mode="after")
+    def validate_result_cache_resume(self) -> Self:
+        """Keep recovery single-pass and reject modes that transform requests at dispatch."""
+        from aiperf.common.enums import CacheBustTarget
+
+        if not any(getattr(dataset, "resume_from", None) for dataset in self.datasets):
+            return self
+        if (
+            len(self.datasets) != 1
+            or len(self.phases) != 1
+            or self.phases[0].kind != "profiling"
+        ):
+            raise ValueError(
+                "resume_from requires one dataset and one profiling phase without warmup"
+            )
+        if self.endpoint.type != "chat" or len(self.get_model_names()) != 1:
+            raise ValueError(
+                "resume_from requires a chat endpoint and exactly one model"
+            )
+        if self.phases[0].type not in {"concurrency", "constant", "poisson", "gamma"}:
+            raise ValueError("resume_from supports concurrency and rate phases only")
+        if self.get_cache_bust_target() != CacheBustTarget.NONE or (
+            self.accuracy and self.accuracy.enabled
+        ):
+            raise ValueError(
+                "resume_from cannot be combined with cache busting or accuracy evaluation"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_phase_names_unique(self) -> Self:
         """Reject duplicate phase names, case-insensitively, within the list."""
         seen: dict[str, str] = {}

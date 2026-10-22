@@ -56,6 +56,7 @@ from aiperf.common.tokenizer import Tokenizer
 from aiperf.config.artifacts import OutputDefaults
 from aiperf.config.dataset import FileDataset, PublicDataset
 from aiperf.dataset import mmap_cache
+from aiperf.dataset.cache_manager import CacheManager
 from aiperf.dataset.memory_map_utils import turn_from_payload_turn
 from aiperf.dataset.utils import encode_image
 from aiperf.plugin import plugins
@@ -157,6 +158,7 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         # writes under the same key the lookup would have used.
         self._cache_key_for_run: str | None = None
         self._cache_hit_used: bool = False
+        self._cache_manager: CacheManager | None = None
         self._dataset_rebroadcast_task: asyncio.Task[None] | None = None
         # Last DatasetConfiguredNotification published this run, if any.
         # DatasetConfiguredNotification is a one-shot PUB/SUB broadcast with
@@ -222,6 +224,8 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         # cache targets would block the DatasetManager event loop -- and its
         # heartbeat/command handlers -- for the full hash. Mirrors the populate/
         # restore paths, which are already offloaded.
+        if getattr(self.run.cfg.get_default_dataset(), "resume_from", None):
+            self._cache_manager = await asyncio.to_thread(CacheManager, self.run)
         cache_hit = await asyncio.to_thread(self._try_cache_lookup)
         if cache_hit is not None:
             self.info(
@@ -319,7 +323,8 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
             else None
         )
         return (
-            isinstance(default_dataset, FileDataset)
+            self._cache_manager is not None
+            or isinstance(default_dataset, FileDataset)
             and default_dataset.streaming
             or self._detected_dataset_type == CustomDatasetType.BASETEN_TRACE
             or mmap_cache.is_trace_or_verbatim_dataset(
@@ -859,7 +864,7 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         Sets ``self._cache_key_for_run`` when caching is applicable so the
         post-run populate writes under the same key.
         """
-        if not mmap_cache.cache_enabled():
+        if self._cache_manager is not None or not mmap_cache.cache_enabled():
             return None
         try:
             key = mmap_cache.compute_cache_key_from_run(self.run)
@@ -1004,6 +1009,10 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         accuracy_enabled = accuracy_cfg.enabled if accuracy_cfg else False
         default_dataset = self.run.cfg.get_default_dataset()
 
+        if isinstance(default_dataset, FileDataset) and default_dataset.resume_from:
+            await self._configure_resumed_dataset(default_dataset)
+            return
+
         if isinstance(default_dataset, FileDataset) and default_dataset.streaming:
             await self._configure_streaming_file_dataset(default_dataset)
             return
@@ -1116,6 +1125,77 @@ class DatasetManager(ReplyClientMixin, BaseComponentService):
         self._last_dataset_configured_notification = notification
         await self.publish(notification)
         self._start_dataset_rebroadcast(notification)
+
+    async def _configure_resumed_dataset(self, dataset_config: FileDataset) -> None:
+        """Stream pending samples into mmap while keeping only metadata in memory."""
+        from aiperf.dataset.composer.custom import CustomDatasetComposer
+
+        assert self._cache_manager is not None
+        composer = CustomDatasetComposer(run=self.run, tokenizer=self.tokenizer)
+        source = self._cache_manager.pending(composer.iter_resume_conversations())
+        BackingStoreClass = plugins.get_class(
+            PluginType.DATASET_BACKING_STORE, DatasetBackingStoreType.MEMORY_MAP
+        )
+        self._backing_store = BackingStoreClass(
+            benchmark_id=self.run.benchmark_id,
+            compress_only=self._compress_only,
+            format=MemoryMapFormat.CONVERSATION,
+        )
+        await self._backing_store.initialize()
+        metadata: list[ConversationMetadata] = []
+
+        def read_batch() -> list[Conversation]:
+            batch: list[Conversation] = []
+            for _ in range(128):
+                conversation = next(source, None)
+                if conversation is None:
+                    break
+                batch.append(conversation)
+            return batch
+
+        while batch := await asyncio.to_thread(read_batch):
+            self.dataset = {
+                conversation.session_id: conversation for conversation in batch
+            }
+            if plugins.get_endpoint_metadata(
+                self.run.cfg.endpoint.type
+            ).requires_inline_media:
+                await self._convert_media_urls_to_inline()
+            await self._backing_store.add_conversations(self.dataset)
+            metadata.extend(conversation.metadata() for conversation in batch)
+            self.dataset = {}
+        await self._backing_store.finalize()
+        await asyncio.to_thread(self._cache_manager.save_report)
+        self._default_context_mode = composer.get_default_context_mode()
+        self._detected_dataset_type = composer.detected_dataset_type
+        self.dataset_metadata = DatasetMetadata(
+            conversations=metadata,
+            sampling_strategy=dataset_config.sampling,
+            default_context_mode=self._default_context_mode,
+            result_cache=self._cache_manager.report,
+        )
+        self.info(
+            f"Result cache: {self._cache_manager.report.cached_samples} reused, "
+            f"{self._cache_manager.report.pending_samples} pending"
+        )
+        notification = DatasetConfiguredNotification(
+            service_id=self.service_id,
+            metadata=self.dataset_metadata,
+            client_metadata=self._backing_store.get_client_metadata(),
+            benchmark_generation=self.run.benchmark_id,
+            dataset_generation=_dataset_generation_of(
+                self._backing_store.get_client_metadata()
+            ),
+        )
+        self._last_dataset_configured_notification = notification
+        await self.publish(notification)
+        self._start_dataset_rebroadcast(notification)
+
+    @on_stop
+    async def _close_cache_manager(self) -> None:
+        if self._cache_manager is not None:
+            await asyncio.to_thread(self._cache_manager.close)
+            self._cache_manager = None
 
     async def _configure_streaming_file_dataset(
         self, dataset_config: FileDataset

@@ -74,6 +74,7 @@ from aiperf.common.models import (
     TimesliceResult,
     WorkerProcessingStats,
 )
+from aiperf.common.models.dataset_models import CacheReport
 from aiperf.common.results_markers import CHECKPOINTS_DIR_NAME
 from aiperf.common.scenario.registry import get_scenario
 from aiperf.common.types import MetricTagT
@@ -853,6 +854,7 @@ class RecordsManager(PullClientMixin, BaseComponentService):
         # this event so results processors are configured (e.g. accuracy task names)
         # before any record is accumulated.
         self._dataset_configured_event: asyncio.Event = asyncio.Event()
+        self._cache_report: CacheReport | None = None
         self._dataset_config_catch_up = DatasetConfigCatchUp(
             request_client=self.comms.create_request_client(
                 address=CommAddress.DATASET_MANAGER_PROXY_FRONTEND,
@@ -1617,6 +1619,7 @@ class RecordsManager(PullClientMixin, BaseComponentService):
     async def _on_dataset_configured(
         self, message: DatasetConfiguredNotification
     ) -> None:
+        self._cache_report = getattr(message.metadata, "result_cache", None)
         for handler in (*self._accumulators.values(), *self._stream_exporters.values()):
             if hasattr(handler, "on_dataset_configured"):
                 handler.on_dataset_configured(message.metadata)
@@ -2761,6 +2764,21 @@ class RecordsManager(PullClientMixin, BaseComponentService):
             error_results,
             summary_ctx,
         ) = await self._summarize_metric_record_accumulators(phase, cancelled)
+        if (
+            not records_results
+            and isinstance(getattr(self, "_cache_report", None), CacheReport)
+            and self._cache_report.pending_samples == 0
+            and not cancelled
+        ):
+            records_results.append(
+                MetricResult(
+                    tag="request_count",
+                    header="Request Count",
+                    unit="requests",
+                    avg=0.0,
+                    count=1,
+                )
+            )
         error_results.extend(artifact_finalize_errors)
         error_results.extend(telemetry_drain_errors)
 

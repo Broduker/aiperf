@@ -19,6 +19,7 @@ from aiperf.common.enums import BaselineKind, CacheBustTarget, CreditPhase
 from aiperf.common.environment import Environment
 from aiperf.common.loop_scheduler import LoopScheduler
 from aiperf.common.mixins import TaskManagerMixin
+from aiperf.common.models.dataset_models import CacheReport
 from aiperf.common.phase import phase_runtime_key
 from aiperf.credit.issuer import CreditIssuer
 from aiperf.plugin import plugins
@@ -152,6 +153,20 @@ class PhaseRunner(TaskManagerMixin):
                     )
                     if config.expected_num_sessions is not None
                     else session_budget,
+                }
+            )
+        if isinstance(getattr(metadata, "result_cache", None), CacheReport):
+            pending = len(metadata.conversations)
+            self._config = self._config.model_copy(
+                update={
+                    "total_expected_requests": (
+                        min(self._config.total_expected_requests or pending, pending)
+                        or None
+                    ),
+                    "expected_num_sessions": (
+                        min(self._config.expected_num_sessions or pending, pending)
+                        or None
+                    ),
                 }
             )
         if config.timing_mode == TimingMode.FIXED_SCHEDULE and metadata:
@@ -567,6 +582,35 @@ class PhaseRunner(TaskManagerMixin):
         Returns:
             CreditPhaseStats snapshot of final phase state.
         """
+        metadata = self._conversation_source.dataset_metadata
+        if (
+            isinstance(getattr(metadata, "result_cache", None), CacheReport)
+            and not metadata.conversations
+        ):
+            self._credit_router.begin_phase(
+                self._config.phase, self._config.phase_index
+            )
+            self._router_phase_started = True
+            await self._credit_router.wait_for_workers(
+                timeout=Environment.SERVICE.START_TIMEOUT
+            )
+            self._lifecycle.start()
+            await self._phase_publisher.publish_phase_start(
+                self._config, self._progress.create_stats(self._lifecycle)
+            )
+            self._lifecycle.mark_sending_complete(timeout_triggered=False)
+            self._progress.freeze_sent_counts()
+            self._progress.all_credits_sent_event.set()
+            await self._phase_publisher.publish_phase_sending_complete(
+                self._progress.create_stats(self._lifecycle)
+            )
+            self._lifecycle.mark_complete(grace_period_triggered=False)
+            self._progress.freeze_completed_counts()
+            stats = self._create_final_stats()
+            self._progress.all_credits_returned_event.set()
+            await self._phase_publisher.publish_phase_complete(stats)
+            self._release_router_phase_state()
+            return stats
         strategy = self._build_strategy()
         try:
             self._register_strategy_with_callback_handler(strategy)

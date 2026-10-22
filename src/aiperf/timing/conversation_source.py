@@ -219,7 +219,9 @@ class ConversationSource:
             == DatasetSamplingStrategy.SEQUENTIAL
             else ShuffleSampler
         )
-        self._dataset_sampler = sampler(roots)
+        self._dataset_sampler = sampler(
+            roots, allow_empty=self._dataset_metadata.result_cache is not None
+        )
         return len(roots)
 
     def _marker_for_session(

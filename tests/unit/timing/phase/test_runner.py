@@ -14,6 +14,7 @@ from aiperf.common.models import (
     DatasetMetadata,
     TurnMetadata,
 )
+from aiperf.common.models.dataset_models import CacheReport
 from aiperf.config.rate_series import RateSeriesConfig
 from aiperf.credit.sticky_router import StickyCreditRouter
 from aiperf.credit.structs import Credit
@@ -204,6 +205,33 @@ async def runner(
 
 
 class TestPhaseRunnerLifecycle:
+    @pytest.mark.parametrize("pending", [0, 2])
+    async def test_continuous_recovery_keeps_pending_budget(
+        self,
+        conv_src: MagicMock,
+        pub: MagicMock,
+        router: MagicMock,
+        conc: MagicMock,
+        cancel: MagicMock,
+        cb: MagicMock,
+        pending: int,
+    ) -> None:
+        metadata = make_dataset_metadata(
+            [(f"pending-{index}", 1) for index in range(pending)]
+        )
+        metadata.result_cache = CacheReport(
+            total_samples=10, cached_samples=10 - pending, pending_samples=pending
+        )
+        conv_src.dataset_metadata = metadata
+        conv_src.start_single_pass.return_value = pending
+        config = cfg(mode=TimingMode.ADAPTIVE_SCALE, reqs=100).model_copy(
+            update={"adaptive_continuous": True}
+        )
+        runner = make_runner(config, conv_src, pub, router, conc, cancel, cb)
+        assert runner._config.expected_num_sessions == (pending or None)
+        assert runner._config.total_expected_requests == (pending or None)
+        conv_src.start_single_pass.assert_called_once_with()
+
     @pytest.mark.parametrize("session_limit,expected", [(None, 3), (2, 2), (10, 3)])
     async def test_continuous_adaptive_uses_single_pass_budget(
         self,
@@ -224,6 +252,54 @@ class TestPhaseRunnerLifecycle:
         assert runner._config.expected_num_sessions == expected
         assert runner._lifecycle.time_left_in_seconds() is None
         conv_src.start_single_pass.assert_called_once_with()
+
+    @pytest.mark.parametrize("request_cap", [None, 1, 100])
+    async def test_recovery_caps_fresh_requests_to_pending_samples(
+        self,
+        conv_src: MagicMock,
+        pub: MagicMock,
+        router: MagicMock,
+        conc: MagicMock,
+        cancel: MagicMock,
+        cb: MagicMock,
+        request_cap: int | None,
+    ) -> None:
+        metadata = make_dataset_metadata([("pending-1", 1), ("pending-2", 1)])
+        metadata.result_cache = CacheReport(
+            total_samples=10, cached_samples=8, pending_samples=2
+        )
+        conv_src.dataset_metadata = metadata
+        runner = make_runner(
+            cfg(reqs=request_cap), conv_src, pub, router, conc, cancel, cb
+        )
+        assert runner._config.total_expected_requests == (1 if request_cap == 1 else 2)
+        assert runner._config.expected_num_sessions == 2
+
+    async def test_all_cached_finishes_without_strategy_or_credits(
+        self,
+        conv_src: MagicMock,
+        pub: MagicMock,
+        router: MagicMock,
+        conc: MagicMock,
+        cancel: MagicMock,
+        cb: MagicMock,
+    ) -> None:
+        metadata = make_dataset_metadata([])
+        metadata.result_cache = CacheReport(total_samples=10, cached_samples=10)
+        conv_src.dataset_metadata = metadata
+        runner = make_runner(cfg(), conv_src, pub, router, conc, cancel, cb)
+        with patch.object(
+            runner,
+            "_build_strategy",
+            side_effect=AssertionError("must not build strategy"),
+        ):
+            stats = await runner.run(is_final_phase=True)
+        assert runner._lifecycle.is_complete
+        assert stats.phase == CreditPhase.PROFILING
+        pub.publish_phase_start.assert_awaited_once()
+        pub.publish_phase_sending_complete.assert_awaited_once()
+        pub.publish_phase_complete.assert_awaited_once()
+        conv_src.next.assert_not_called()
 
     async def test_fatal_control_node_failure_is_reraised_not_swallowed(
         self, runner: PhaseRunner

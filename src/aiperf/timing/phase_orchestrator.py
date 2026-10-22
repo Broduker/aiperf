@@ -209,7 +209,8 @@ class PhaseOrchestrator(AIPerfLifecycleMixin):
         ]
         self._dataset_sampler = SamplerClass(
             conversation_ids=root_conv_ids
-            or [c.conversation_id for c in self._dataset_metadata.conversations]
+            or [c.conversation_id for c in self._dataset_metadata.conversations],
+            allow_empty=self._dataset_metadata.result_cache is not None,
         )
 
         # Long-lived components (shared across phases).

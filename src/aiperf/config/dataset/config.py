@@ -296,6 +296,25 @@ class FileDataset(SystemPromptMixin):
 
     name: _DatasetName
 
+    resume_from: list[Path] = Field(
+        default_factory=list,
+        description="Historical RAW JSONL files or directories used to skip successful single-turn requests. "
+        "Matches explicit session_id and the complete request payload; failures are retried. "
+        "Supports plain and zstd-compressed RAW exports. Paths must be mounted in the dataset manager.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_result_resume(self) -> FileDataset:
+        if self.resume_from and (
+            self.format != DatasetFormat.SINGLE_TURN
+            or self.path is None
+            or self.sampling != DatasetSamplingStrategy.SEQUENTIAL
+        ):
+            raise ValueError(
+                "resume_from requires a path-backed single_turn dataset with sequential sampling"
+            )
+        return self
+
     type: Annotated[
         Literal[DatasetType.FILE],
         Field(description="Dataset type discriminator. Must be 'file'."),
