@@ -213,6 +213,16 @@ metric fields serialize as `throughputRps`, `latencyP99Ms`, `ttftMs`,
 `variationIndex`, `variationLabel`, `variationValues`, `trialIndex`. All are
 optional and serialize as `null` when the CR status has not reported them.
 
+For cache-resumed runs, `resultCache` contains historical cached successes,
+current successes/errors, and overall sample totals. `progressPercent`,
+`totalRequests`, and `errorRate` use these overall counters when available.
+The overall error rate is current errors divided by cached successes plus
+current successes and errors. For example, 60 cached successes, 30 new
+successes, and 10 new errors give 100 processed samples, 100% progress, and
+a 10% overall error rate. Performance metrics continue to describe this run.
+The controller exposes the same accounting as `result_cache` in
+`GET /api/progress`; completion refreshes `status.resultCache` before teardown.
+
 **Status codes**
 
 - `200` — success (possibly empty list)

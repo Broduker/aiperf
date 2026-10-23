@@ -465,6 +465,12 @@ tablet widths; very narrow viewports are not a supported target.
 
 ---
 
+Cache-resumed jobs include historical successful samples in overall progress,
+the Success Rate tile, and Record Processing totals. Errors count this run's
+failures; cached successes contribute to the denominator. Per-phase counters
+and throughput/latency describe the current run. These overall counters remain
+on the job status after completion.
+
 ## Troubleshooting
 
 ### Blank page with console 404s for `/app.js`

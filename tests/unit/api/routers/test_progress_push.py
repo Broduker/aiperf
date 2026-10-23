@@ -35,6 +35,7 @@ def _make_router():
     r._results_exported = False
     r._controller_failure = None
     r._server_metrics = None
+    r._result_cache_report = None
     r._metrics = []
     r._progress_tracker = MagicMock()
     r._progress_tracker._phases = {}

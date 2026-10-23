@@ -14,6 +14,7 @@ from aiperf.common.enums import CreditPhase, SystemState
 from aiperf.common.mixins.progress_tracker_mixin import CombinedPhaseStats
 from aiperf.common.models import AIPerfBaseModel
 from aiperf.common.types import PhaseKind
+from aiperf.kubernetes.crd_models import ResultCacheProgress
 
 # HTTP status codes that are retryable (transient failures). Not a tunable —
 # these are the canonical RFC-7231/7232 transient codes; do not promote to env.
@@ -82,6 +83,10 @@ class JobProgress(AIPerfBaseModel):
     workers: ControllerAggregateWorkerStatus = Field(
         default_factory=ControllerAggregateWorkerStatus,
         description="Controller-authored aggregate worker status.",
+    )
+    result_cache: ResultCacheProgress | None = Field(
+        default=None,
+        description="Overall sample progress including historical cached successes.",
     )
     results_exported: bool = Field(
         default=False,

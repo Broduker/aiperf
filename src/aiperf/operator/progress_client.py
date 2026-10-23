@@ -303,6 +303,7 @@ class ProgressClient:
         return JobProgress(
             phases=phases,
             workers=workers,
+            result_cache=data.get("result_cache"),
             error=data.get("error"),
             # Default False: older controllers (pre-fix) omit this field, so
             # they look incomplete to the operator — that is intentional, the

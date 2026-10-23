@@ -11,19 +11,23 @@ succeeded with real export files, those exports are authoritative.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import kopf
 import orjson
 import pytest
 from pytest import param
 
-from aiperf.kubernetes.crd_models import ControllerFetchResult
+from aiperf.kubernetes.crd_models import ControllerFetchResult, ResultCacheProgress
 from aiperf.operator.handlers.completion import (
+    _collect_final_phase_progress,
     _load_phase_manifest_payload,
     _reconcile_phase_counts_from_results,
     _ResultFlags,
 )
+from aiperf.operator.progress_client import JobProgress, ProgressClient
 from aiperf.operator.status import StatusBuilder
 
 
@@ -49,6 +53,31 @@ def _result(request_count: float | None) -> ControllerFetchResult:
 
 
 _OK = _ResultFlags(has_metrics=True, has_files=True, has_error=False, success=True)
+
+
+@pytest.mark.asyncio
+async def test_final_snapshot_retains_cache_accounting() -> None:
+    cache = ResultCacheProgress(
+        total_samples=100,
+        cached_success_samples=60,
+        current_success_samples=30,
+        current_error_samples=10,
+        overall_success_samples=90,
+        overall_error_samples=10,
+        overall_processed_samples=100,
+        overall_progress_percent=100.0,
+        overall_error_rate=0.1,
+    )
+    progress_client = AsyncMock(spec=ProgressClient)
+    progress_client.get_progress.return_value = JobProgress(result_cache=cache)
+
+    status = await _collect_final_phase_progress(
+        progress_client=progress_client,
+        host="controller",
+        cancellation_event=asyncio.Event(),
+    )
+
+    assert status["resultCache"] == cache.to_k8s_dict()
 
 
 def _manifest(*phases: dict) -> dict:

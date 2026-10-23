@@ -1479,9 +1479,10 @@ async def _collect_final_phase_progress(
     host: str,
     cancellation_event: asyncio.Event,
 ) -> dict[str, Any]:
-    """Collect the latest complete phase snapshot within the settle budget."""
+    """Collect the final phase and cache status within the settle budget."""
     attempts = OperatorEnvironment.RESULTS.PHASE_SETTLE_ATTEMPTS
     phases_data: dict[str, Any] = {}
+    status_data: dict[str, Any] = {}
     for attempt in range(attempts + 1):
         progress = await _await_or_cancel(
             progress_client.get_progress(host), cancellation_event
@@ -1489,6 +1490,8 @@ async def _collect_final_phase_progress(
         _raise_if_phase_refresh_cancelled(cancellation_event)
         if progress.connection_error:
             break
+        if progress.result_cache is not None:
+            status_data["resultCache"] = progress.result_cache.to_k8s_dict()
         sample = _build_final_phase_sample(progress)
         if sample:
             phases_data = sample
@@ -1503,7 +1506,9 @@ async def _collect_final_phase_progress(
             cancellation_event,
         )
         _raise_if_phase_refresh_cancelled(cancellation_event)
-    return phases_data
+    if phases_data:
+        status_data["phases"] = phases_data
+    return status_data
 
 
 async def _refresh_final_phase_progress(
@@ -1534,13 +1539,12 @@ async def _refresh_final_phase_progress(
         progress_client = await _get_phase_refresh_client(key, cancellation_event)
         try:
             host = controller_dns_name(jobset_name, namespace)
-            phases_data = await _collect_final_phase_progress(
+            status_data = await _collect_final_phase_progress(
                 progress_client=progress_client,
                 host=host,
                 cancellation_event=cancellation_event,
             )
-            if phases_data:
-                patch.status["phases"] = phases_data
+            patch.status.update(status_data)
         finally:
             await release_progress_client(key)
     except _FetchCancelled:

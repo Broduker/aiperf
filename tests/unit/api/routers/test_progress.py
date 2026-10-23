@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from kubernetes_asyncio.client.exceptions import ApiException
 from starlette.testclient import TestClient
 
-from aiperf.api.routers.progress import ProgressRouter
+from aiperf.api.routers.progress import ProgressRouter, _build_result_cache_progress
 from aiperf.common.control_structs import CommandOk
 from aiperf.common.enums import CommandType, SystemState
 from aiperf.common.messages import (
@@ -23,6 +23,7 @@ from aiperf.common.messages import (
     WorkerPodStateMessage,
 )
 from aiperf.common.mixins.progress_tracker_mixin import CombinedPhaseStats
+from aiperf.common.models.dataset_models import CacheReport
 from aiperf.config import AIPerfConfig
 from aiperf.controller.system_controller_models import PodStateSnapshot
 
@@ -96,6 +97,54 @@ class TestProgressEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["phases"] == {}
+
+    def test_progress_includes_cached_successes_and_current_errors(
+        self, progress_client: TestClient, progress_router: ProgressRouter
+    ) -> None:
+        progress_router._result_cache_report = CacheReport(
+            total_samples=100, cached_samples=60, pending_samples=40
+        )
+        progress_router._progress_tracker._phases = {
+            "profiling": CombinedPhaseStats(
+                phase="profiling", success_records=300, error_records=100
+            ),
+            "steady-state": CombinedPhaseStats(
+                phase="profiling",
+                phase_name="steady-state",
+                phase_kind="profiling",
+                success_records=30,
+                error_records=10,
+            ),
+            "warmup": CombinedPhaseStats(
+                phase="warmup", phase_name="warmup", success_records=5, error_records=2
+            ),
+        }
+
+        response = progress_client.get("/api/progress")
+
+        assert response.status_code == 200
+        cache = response.json()["result_cache"]
+        assert cache["cachedSuccessSamples"] == 60
+        assert cache["currentSuccessSamples"] == 30
+        assert cache["currentErrorSamples"] == 10
+        assert cache["overallSuccessSamples"] == 90
+        assert cache["overallErrorSamples"] == 10
+        assert cache["overallProcessedSamples"] == 100
+        assert cache["overallProgressPercent"] == 100.0
+        assert cache["overallErrorRate"] == pytest.approx(0.1)
+
+    def test_all_cached_is_complete_before_current_records(self) -> None:
+        progress = _build_result_cache_progress(
+            {}, CacheReport(total_samples=10, cached_samples=10)
+        )
+        assert progress is not None
+        assert progress.overall_progress_percent == 100.0
+        assert progress.overall_success_samples == 10
+        assert progress.overall_error_rate == 0.0
+
+    def test_empty_cache_input_does_not_override_regular_progress(self) -> None:
+        assert _build_result_cache_progress({}, CacheReport()) is None
+        assert _build_result_cache_progress({}, None) is None
 
     def test_progress_with_phases(
         self, progress_client: TestClient, progress_router: ProgressRouter

@@ -98,7 +98,14 @@ class TestProgressSnapshotSchema:
 
         assert response.status_code == 200
         data = orjson.loads(response.content)
-        assert set(data) == {"phases", "workers", "results_exported", "system_state"}
+        assert set(data) == {
+            "phases",
+            "workers",
+            "results_exported",
+            "system_state",
+            "result_cache",
+        }
+        assert data["result_cache"] is None
         assert data["phases"] == {}
         assert data["results_exported"] is False
         assert data["system_state"] == "initializing"

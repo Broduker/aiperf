@@ -944,6 +944,34 @@ def _status_schema() -> dict[str, Any]:
                     "x-kubernetes-preserve-unknown-fields": True,
                 },
             },
+            "resultCache": {
+                "type": "object",
+                "description": "Overall progress and error accounting including reused samples",
+                "properties": {
+                    **{
+                        name: {"type": "integer", "format": "int64", "minimum": 0}
+                        for name in (
+                            "totalSamples",
+                            "cachedSuccessSamples",
+                            "currentSuccessSamples",
+                            "currentErrorSamples",
+                            "overallSuccessSamples",
+                            "overallErrorSamples",
+                            "overallProcessedSamples",
+                        )
+                    },
+                    "overallProgressPercent": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100,
+                    },
+                    "overallErrorRate": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                },
+            },
             "requestsCompleted": {
                 "type": "integer",
                 "format": "int64",

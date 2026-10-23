@@ -33,6 +33,23 @@ class TestJobProgress:
         assert progress.error is None
         assert progress.connection_error is None
         assert progress.results_exported is False
+        assert progress.result_cache is None
+
+    def test_parse_progress_preserves_cache_accounting(self) -> None:
+        cache = {
+            "total_samples": 100,
+            "cached_success_samples": 60,
+            "current_success_samples": 30,
+            "current_error_samples": 10,
+            "overall_success_samples": 90,
+            "overall_error_samples": 10,
+            "overall_processed_samples": 100,
+            "overall_progress_percent": 100.0,
+            "overall_error_rate": 0.1,
+        }
+        progress = ProgressClient()._parse_progress_response({"result_cache": cache})
+        assert progress.result_cache is not None
+        assert progress.result_cache.model_dump() == cache
 
     def test_is_complete_no_profiling(self) -> None:
         """Test is_complete returns False when no profiling phase."""

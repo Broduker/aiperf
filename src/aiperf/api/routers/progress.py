@@ -38,6 +38,7 @@ from aiperf.common.mixins.progress_tracker_mixin import (
 )
 from aiperf.common.mixins.realtime_metrics_mixin import RealtimeMetricsMixin
 from aiperf.common.models import MetricResult
+from aiperf.common.models.dataset_models import CacheReport
 from aiperf.controller.system_controller_models import (
     AggregateWorkerStatus,
     build_aggregate_worker_status,
@@ -46,7 +47,7 @@ from aiperf.kubernetes.constants import (
     JSON_PATCH_CONTENT_TYPE,
     MERGE_PATCH_CONTENT_TYPE,
 )
-from aiperf.kubernetes.crd_models import build_phase_progress
+from aiperf.kubernetes.crd_models import ResultCacheProgress, build_phase_progress
 from aiperf.kubernetes.phase import as_phase
 
 ProgressDep = Annotated["ProgressRouter", component_dependency("progress")]
@@ -144,8 +145,8 @@ def _current_phase_name(phases: dict[str, CombinedPhaseStats]) -> str | None:
 
 
 def _build_result_cache_progress(
-    phases: dict[str, CombinedPhaseStats], report: Any | None
-) -> Any | None:
+    phases: dict[str, CombinedPhaseStats], report: CacheReport | None
+) -> ResultCacheProgress | None:
     """Combine historical cache hits with current profiling record counters."""
     if report is None or report.total_samples <= 0:
         return None
@@ -166,8 +167,6 @@ def _build_result_cache_progress(
     progress = 100.0 * processed / report.total_samples
     error_rate = overall_error / processed if processed else 0.0
 
-    from aiperf.kubernetes.crd_models import ResultCacheProgress
-
     return ResultCacheProgress(
         total_samples=report.total_samples,
         cached_success_samples=cached_success,
@@ -181,7 +180,9 @@ def _build_result_cache_progress(
     )
 
 
-def _result_cache_status_patch(result_cache: Any | None) -> dict[str, Any]:
+def _result_cache_status_patch(
+    result_cache: ResultCacheProgress | None,
+) -> dict[str, Any]:
     """Return the optional cache progress status field for a CR patch."""
     if result_cache is None:
         return {}
@@ -281,7 +282,7 @@ class ProgressRouter(
         # let the kopf-timer monitor claim completion mid-export.
         self._results_exported: bool = False
         self._controller_failure: str | None = None
-        self._result_cache_report = None
+        self._result_cache_report: CacheReport | None = None
         # Mirrors SystemController's outer-lifecycle SystemState. Updated via
         # SYSTEM_STATE_CHANGED bus messages so the API sidecar (which lives in
         # a separate container) can surface controller-side state on
@@ -634,7 +635,7 @@ async def _push_aiperfjob_status(
     metrics: list[MetricResult] | None = None,
     server_metrics: dict[str, Any] | None = None,
     workers: AggregateWorkerStatus | None = None,
-    result_cache: Any | None = None,
+    result_cache: ResultCacheProgress | None = None,
 ) -> None:
     """Refresh the controller heartbeat and merge-patch current progress.
 
