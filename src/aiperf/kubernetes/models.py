@@ -13,7 +13,7 @@ from aiperf.common.endpoint_credentials import redact_sweep_public_data
 from aiperf.common.finite import FiniteFloat
 from aiperf.common.redact import redact_url
 from aiperf.kubernetes.constants import AIPerfLabels, Annotations, ProgressAnnotations
-from aiperf.kubernetes.crd_models import MetricsSummary
+from aiperf.kubernetes.crd_models import MetricsSummary, ResultCacheProgress
 from aiperf.kubernetes.enums import JobSetStatus
 from aiperf.kubernetes.k8s_models import K8sCamelModel
 
@@ -248,6 +248,10 @@ class CRJobStatus(K8sCamelModel):
         default_factory=dict,
         description="Per-phase progress (PhaseProgress.to_k8s_dict() format).",
     )
+    result_cache: ResultCacheProgress | None = Field(
+        default=None,
+        description="Overall progress and error accounting including reused samples.",
+    )
     run_epoch: int | None = Field(
         default=None,
         description="Epoch key of the current run, including while running. Use as "
@@ -452,8 +456,12 @@ class AIPerfJobCR(K8sCamelModel):
             start_time=self.status.start_time,
             completion_time=self.status.completion_time,
             created=self.metadata.creation_timestamp,
-            progress_percent=_requests_progress_percent(
-                self.status.phases, self.status.current_phase
+            progress_percent=(
+                self.status.result_cache.overall_progress_percent
+                if self.status.result_cache is not None
+                else _requests_progress_percent(
+                    self.status.phases, self.status.current_phase
+                )
             ),
             throughput_rps=float(throughput) if throughput is not None else None,
             latency_p99_ms=float(latency) if latency is not None else None,
@@ -462,8 +470,17 @@ class AIPerfJobCR(K8sCamelModel):
                 summary, "output_token_throughput", "avg"
             ),
             inter_token_latency_ms=_summary_stat(summary, "inter_token_latency", "avg"),
-            total_requests=_total_requests(summary),
-            error_rate=_error_rate(summary),
+            total_requests=(
+                self.status.result_cache.overall_processed_samples
+                if self.status.result_cache is not None
+                else _total_requests(summary)
+            ),
+            error_rate=(
+                self.status.result_cache.overall_error_rate
+                if self.status.result_cache is not None
+                else _error_rate(summary)
+            ),
+            result_cache=self.status.result_cache,
             model=_first_model_name(self.spec.benchmark.models)
             or self.spec.benchmark.model,
             endpoint=_endpoint_url(self.spec.benchmark.endpoint),
@@ -571,6 +588,10 @@ class AIPerfJobInfo(K8sCamelModel):
             "request_error_rate metric (rate/100) when present, else as "
             "error_request_count / (successes + errors)."
         ),
+    )
+    result_cache: ResultCacheProgress | None = Field(
+        default=None,
+        description="Overall progress and error accounting including reused samples.",
     )
     model: str | None = Field(default=None, description="Target model name from spec.")
     endpoint: str | None = Field(

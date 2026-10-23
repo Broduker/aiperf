@@ -25,6 +25,7 @@ from aiperf.common.enums import MessageType, SystemState
 from aiperf.common.hooks import on_message, on_start
 from aiperf.common.messages import (
     BaseServiceErrorMessage,
+    DatasetConfiguredNotification,
     RealtimeMetricsMessage,
     RealtimeServerMetricsMessage,
     ResultsExportedMessage,
@@ -142,6 +143,51 @@ def _current_phase_name(phases: dict[str, CombinedPhaseStats]) -> str | None:
     )[0]
 
 
+def _build_result_cache_progress(
+    phases: dict[str, CombinedPhaseStats], report: Any | None
+) -> Any | None:
+    """Combine historical cache hits with current profiling record counters."""
+    if report is None or report.total_samples <= 0:
+        return None
+
+    current_success = 0
+    current_error = 0
+    for stats in _concrete_phases(phases).values():
+        phase_kind = str(stats.phase_kind or stats.phase)
+        if phase_kind.lower() not in {"profiling", "creditphase.profiling"}:
+            continue
+        current_success += stats.success_records
+        current_error += stats.error_records
+
+    cached_success = report.cached_samples
+    overall_success = cached_success + current_success
+    overall_error = current_error
+    processed = min(report.total_samples, overall_success + overall_error)
+    progress = 100.0 * processed / report.total_samples
+    error_rate = overall_error / processed if processed else 0.0
+
+    from aiperf.kubernetes.crd_models import ResultCacheProgress
+
+    return ResultCacheProgress(
+        total_samples=report.total_samples,
+        cached_success_samples=cached_success,
+        current_success_samples=current_success,
+        current_error_samples=current_error,
+        overall_success_samples=overall_success,
+        overall_error_samples=overall_error,
+        overall_processed_samples=processed,
+        overall_progress_percent=min(100.0, progress),
+        overall_error_rate=min(1.0, error_rate),
+    )
+
+
+def _result_cache_status_patch(result_cache: Any | None) -> dict[str, Any]:
+    """Return the optional cache progress status field for a CR patch."""
+    if result_cache is None:
+        return {}
+    return {"resultCache": result_cache.to_k8s_dict()}
+
+
 def _is_json_patch_test_failure(exc: Any) -> bool:
     """Tell a rejected ``test`` op apart from a rejected payload.
 
@@ -235,6 +281,7 @@ class ProgressRouter(
         # let the kopf-timer monitor claim completion mid-export.
         self._results_exported: bool = False
         self._controller_failure: str | None = None
+        self._result_cache_report = None
         # Mirrors SystemController's outer-lifecycle SystemState. Updated via
         # SYSTEM_STATE_CHANGED bus messages so the API sidecar (which lives in
         # a separate container) can surface controller-side state on
@@ -278,6 +325,14 @@ class ProgressRouter(
     async def _on_results_exported(self, _message: ResultsExportedMessage) -> None:
         """Record that the controller has finished writing artifacts to disk."""
         self._results_exported = True
+        self._schedule_status_push()
+
+    @on_message(MessageType.DATASET_CONFIGURED_NOTIFICATION)
+    async def _on_dataset_configured(
+        self, message: DatasetConfiguredNotification
+    ) -> None:
+        """Keep cache accounting available for unified progress publication."""
+        self._result_cache_report = message.metadata.result_cache
         self._schedule_status_push()
 
     @on_message(MessageType.REALTIME_SERVER_METRICS)
@@ -412,6 +467,9 @@ class ProgressRouter(
                 server_metrics=self._server_metrics,
                 workers=build_aggregate_worker_status(
                     self._pod_state_tracker.pod_states
+                ),
+                result_cache=_build_result_cache_progress(
+                    dict(self._progress_tracker._phases), self._result_cache_report
                 ),
             )
         except Exception:  # noqa: BLE001
@@ -576,6 +634,7 @@ async def _push_aiperfjob_status(
     metrics: list[MetricResult] | None = None,
     server_metrics: dict[str, Any] | None = None,
     workers: AggregateWorkerStatus | None = None,
+    result_cache: Any | None = None,
 ) -> None:
     """Refresh the controller heartbeat and merge-patch current progress.
 
@@ -654,6 +713,8 @@ async def _push_aiperfjob_status(
             status_patch["requestsPerSecond"] = round(
                 primary_stats.requests_per_second or 0.0, 2
             )
+
+        status_patch.update(_result_cache_status_patch(result_cache))
 
         if live_metrics_dict:
             from aiperf.kubernetes.crd_models import MetricsSummary
@@ -954,6 +1015,9 @@ async def get_progress(
     """Get benchmark progress with full phase stats."""
     return ProgressResponse(
         phases=component._progress_tracker._phases,
+        result_cache=_build_result_cache_progress(
+            dict(component._progress_tracker._phases), component._result_cache_report
+        ),
         workers=await _get_controller_workers(conn, component),
         results_exported=component._results_exported,
         system_state=component._system_state,

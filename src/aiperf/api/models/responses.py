@@ -16,6 +16,7 @@ from aiperf.common.enums import SystemState
 from aiperf.common.mixins.progress_tracker_mixin import CombinedPhaseStats
 from aiperf.common.models import AIPerfBaseModel, WorkerGroupStats, WorkerStats
 from aiperf.controller.system_controller_models import AggregateWorkerStatus
+from aiperf.kubernetes.crd_models import ResultCacheProgress
 
 
 class ProgressResponse(AIPerfBaseModel):
@@ -33,6 +34,10 @@ class ProgressResponse(AIPerfBaseModel):
             "enum value should instead iterate the dict or match on each "
             "stats entry's `phase` field."
         ),
+    )
+    result_cache: ResultCacheProgress | None = Field(
+        default=None,
+        description="Overall progress and error accounting including reused samples.",
     )
     workers: AggregateWorkerStatus = Field(
         default_factory=AggregateWorkerStatus,

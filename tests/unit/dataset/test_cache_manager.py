@@ -1,6 +1,7 @@
 """Recoverable RAW shards use stable payload identity and bounded disk indexing."""
 
 import os
+import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -116,6 +117,76 @@ def test_recovery_deduplicates_success_without_copying_response_bodies(
         assert reused["source"] == str(history)
         assert history.read_bytes() == original
         assert not (run.cfg.datasets[0].cache_dir / "results.jsonl").exists()
+    finally:
+        cache.close()
+
+
+def test_pending_close_releases_index_read_snapshot(tmp_path: Path) -> None:
+    cache = CacheManager(make_run(tmp_path))
+    pending = cache.pending([conversation(), conversation("second")])
+    try:
+        assert next(pending).session_id == "sample-1"
+        assert cache.index.in_transaction
+        with sqlite3.connect(cache.cache_dir / "index.sqlite3", timeout=0) as writer:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                writer.execute("BEGIN EXCLUSIVE")
+            pending.close()
+            assert not cache.index.in_transaction
+            writer.execute("BEGIN EXCLUSIVE")
+    finally:
+        pending.close()
+        cache.close()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_pending_nested_call_preserves_outer_read_transaction(
+    tmp_path: Path, fail: bool
+) -> None:
+    cache = CacheManager(make_run(tmp_path))
+    pending = cache.pending([conversation()])
+    try:
+        assert next(pending).session_id == "sample-1"
+        if fail:
+            with pytest.raises(ValueError, match="Duplicate session_id"):
+                list(cache.pending([conversation()]))
+        else:
+            assert [
+                sample.session_id for sample in cache.pending([conversation("second")])
+            ] == ["second"]
+        assert cache.index.in_transaction
+        pending.close()
+        assert not cache.index.in_transaction
+    finally:
+        pending.close()
+        cache.close()
+
+
+@pytest.mark.parametrize("all_cached", [False, True])
+def test_pending_exhaustion_allows_refresh_and_export(
+    tmp_path: Path, all_cached: bool
+) -> None:
+    run = make_run(tmp_path)
+    first = raw_record(run, conversation())
+    second = raw_record(run, conversation("second"))
+    write_shard(run, [first, second] if all_cached else [first])
+    cache = CacheManager(run)
+    try:
+        assert [
+            sample.session_id
+            for sample in cache.pending([conversation(), conversation("second")])
+        ] == ([] if all_cached else ["second"])
+        assert not cache.index.in_transaction
+        cache.save_report()
+        if not all_cached:
+            write_shard(run, [second])
+        cache.refresh()
+        output = tmp_path / "export.jsonl"
+        assert cache.export(output) == 2
+        assert [orjson.loads(line) for line in output.read_bytes().splitlines()] == [
+            first,
+            second,
+        ]
+        assert not cache.index.in_transaction
     finally:
         cache.close()
 
@@ -290,6 +361,7 @@ def test_duplicate_input_and_missing_explicit_id_are_rejected(tmp_path: Path) ->
     try:
         with pytest.raises(ValueError, match="Duplicate session_id"):
             list(cache.pending([conversation(), conversation()]))
+        assert not cache.index.in_transaction
     finally:
         cache.close()
     run.cfg.datasets[0].path.write_bytes(b'{"text":"hello"}\n')

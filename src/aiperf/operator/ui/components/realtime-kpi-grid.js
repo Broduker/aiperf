@@ -272,7 +272,7 @@ function KpiTile({ spec, metric, slos, series }) {
 
 /** Composite goodput / success-rate tile. Goodput when SLOs are declared,
  *  Success Rate (1 - request_error_rate / 100) otherwise. */
-function ReliabilityTile({ summary, slos, timeseries }) {
+function ReliabilityTile({ summary, slos, resultCache, timeseries }) {
   const ts = timeseries ?? {};
   const hasSlo = slos && Object.keys(slos).length > 0;
 
@@ -354,14 +354,14 @@ function ReliabilityTile({ summary, slos, timeseries }) {
   const successVal = scalarOrAvg(reqCount);
   const errorRatePercent = scalarOrAvg(errorRate);
   const errorValFromMetric = scalarOrAvg(errorCount);
-  const completedVal = scalarOrAvg(completedCount);
-  const errVal = errorValFromMetric
+  const completedVal = resultCache?.overallProcessedSamples ?? scalarOrAvg(completedCount);
+  const errVal = resultCache?.overallErrorSamples ?? errorValFromMetric
     ?? (errorRatePercent != null && completedVal != null
         ? Math.round(completedVal * errorRatePercent / 100)
         : null);
   const totalRequests = completedVal
     ?? (successVal != null && errVal != null ? successVal + errVal : null);
-  const rate = errorRatePercent
+  const rate = (resultCache?.overallErrorRate != null ? resultCache.overallErrorRate * 100 : errorRatePercent)
     ?? (totalRequests != null && totalRequests > 0 && errVal != null
         ? (errVal / totalRequests) * 100
         : null);
@@ -411,10 +411,11 @@ function ReliabilityTile({ summary, slos, timeseries }) {
  * @param {object} props
  * @param {Object<string, object>} props.summary - tag-keyed metric snapshot
  * @param {Object<string, number>} [props.slos] - user-declared SLO thresholds
+ * @param {Object<string, number>} [props.resultCache] - overall cache-aware counters
  * @param {Object<string, Array>} [props.timeseries] - optional per-tag series
  *   for sparklines. Empty by default; populated once a WS feed lands.
  */
-export function RealtimeKpiGrid({ summary, slos, timeseries }) {
+export function RealtimeKpiGrid({ summary, slos, resultCache, timeseries }) {
   const ts = timeseries ?? {};
   const sloDict = slos ?? null;
 
@@ -423,7 +424,8 @@ export function RealtimeKpiGrid({ summary, slos, timeseries }) {
     summary?.['goodput'] != null
     || summary?.['good_request_count'] != null
     || summary?.['request_error_rate'] != null
-    || (summary?.['request_count'] != null && summary?.['error_request_count'] != null);
+    || (summary?.['request_count'] != null && summary?.['error_request_count'] != null)
+    || resultCache != null;
   if (!hasHero && !hasReliability) return null;
 
   return html`
@@ -432,7 +434,8 @@ export function RealtimeKpiGrid({ summary, slos, timeseries }) {
         <${KpiTile} spec=${spec} metric=${pickMetric(summary, spec)} slos=${sloDict}
                     series=${ts[spec.tag] ?? []} key=${spec.tag} />
       `)}
-      <${ReliabilityTile} summary=${summary ?? {}} slos=${sloDict} timeseries=${ts} />
+      <${ReliabilityTile} summary=${summary ?? {}} slos=${sloDict}
+        resultCache=${resultCache} timeseries=${ts} />
     </div>
   `;
 }

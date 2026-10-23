@@ -267,49 +267,56 @@ class CacheManager:
         """Yield current samples without a matching durable successful request."""
         assert self.database is not None and self.index is not None
         endpoint = ModelEndpointInfo.from_run(self.run)
-        with (self.directory / "reused.jsonl").open("ab") as reused:
-            for conversation in conversations:
-                if len(conversation.turns) != 1:
-                    raise ValueError(
-                        "cache_dir requires exactly one turn per explicit session_id"
-                    )
-                _, _, payload = next(
-                    format_conversation_payloads([conversation], endpoint)
-                )
-                fingerprint = payload_fingerprint(payload)
-                try:
-                    self.database.execute(
-                        "INSERT INTO inputs VALUES (?, ?, ?)",
-                        (
-                            conversation.session_id,
-                            fingerprint,
-                            self.report.total_samples,
-                        ),
-                    )
-                except sqlite3.IntegrityError as error:
-                    raise ValueError(
-                        f"Duplicate session_id in recovery input: {conversation.session_id!r}"
-                    ) from error
-                row = self.index.execute(
-                    "SELECT source, line FROM successes WHERE id=? AND fingerprint=?",
-                    (conversation.session_id, fingerprint),
-                ).fetchone()
-                self.report.total_samples += 1
-                if row is None:
-                    self.report.pending_samples += 1
-                    yield conversation
-                else:
-                    self.report.cached_samples += 1
-                    reused.write(
-                        orjson.dumps(
-                            {
-                                "conversation_id": conversation.session_id,
-                                "source": str(self.cache_dir / row[0]),
-                                "line": row[1],
-                            }
+        owns_transaction = not self.index.in_transaction
+        if owns_transaction:
+            self.index.execute("BEGIN")
+        try:
+            with (self.directory / "reused.jsonl").open("ab") as reused:
+                for conversation in conversations:
+                    if len(conversation.turns) != 1:
+                        raise ValueError(
+                            "cache_dir requires exactly one turn per explicit session_id"
                         )
-                        + b"\n"
+                    _, _, payload = next(
+                        format_conversation_payloads([conversation], endpoint)
                     )
+                    fingerprint = payload_fingerprint(payload)
+                    try:
+                        self.database.execute(
+                            "INSERT INTO inputs VALUES (?, ?, ?)",
+                            (
+                                conversation.session_id,
+                                fingerprint,
+                                self.report.total_samples,
+                            ),
+                        )
+                    except sqlite3.IntegrityError as error:
+                        raise ValueError(
+                            f"Duplicate session_id in recovery input: {conversation.session_id!r}"
+                        ) from error
+                    row = self.index.execute(
+                        "SELECT source, line FROM successes WHERE id=? AND fingerprint=?",
+                        (conversation.session_id, fingerprint),
+                    ).fetchone()
+                    self.report.total_samples += 1
+                    if row is None:
+                        self.report.pending_samples += 1
+                        yield conversation
+                    else:
+                        self.report.cached_samples += 1
+                        reused.write(
+                            orjson.dumps(
+                                {
+                                    "conversation_id": conversation.session_id,
+                                    "source": str(self.cache_dir / row[0]),
+                                    "line": row[1],
+                                }
+                            )
+                            + b"\n"
+                        )
+        finally:
+            if owns_transaction and self.index is not None:
+                self.index.rollback()
 
     def save_report(self) -> None:
         """Persist preparation accounting and the current input selection."""

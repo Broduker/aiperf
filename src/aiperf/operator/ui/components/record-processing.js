@@ -18,7 +18,7 @@ import { fmtInt, fmtNumber, fmtReqPerSecond } from '../lib/format.js';
  *
  * @param {{ phases: Record<string, any> }} props
  */
-export function RecordProcessing({ phases }) {
+export function RecordProcessing({ phases, resultCache }) {
   const phaseEntries = Object.entries(phases ?? {});
   if (phaseEntries.length === 0) return null;
 
@@ -50,7 +50,12 @@ export function RecordProcessing({ phases }) {
   }
 
   const totalRecords = totalSuccess + totalError;
-  const errorPct = totalRecords > 0 ? (totalError / totalRecords) * 100 : 0;
+  const overallTotal = resultCache?.overallProcessedSamples ?? totalRecords;
+  const overallSuccess = resultCache?.overallSuccessSamples ?? totalSuccess;
+  const overallError = resultCache?.overallErrorSamples ?? totalError;
+  const errorPct = resultCache?.overallErrorRate != null
+    ? resultCache.overallErrorRate * 100
+    : (totalRecords > 0 ? (totalError / totalRecords) * 100 : 0);
   // "Records lag" = requests already completed but not yet flowing through
   // the records-manager pipeline. Negative shouldn't happen in practice
   // (records can't outrun requests) — clamp at 0.
@@ -68,15 +73,15 @@ export function RecordProcessing({ phases }) {
       <div class="record-summary">
         <div class="record-summary-cell">
           <div class="record-summary-label">Total</div>
-          <div class="record-summary-value">${fmtInt(totalRecords)}</div>
+          <div class="record-summary-value">${fmtInt(overallTotal)}</div>
         </div>
         <div class="record-summary-cell">
           <div class="record-summary-label">Success</div>
-          <div class="record-summary-value record-summary-value--ok">${fmtInt(totalSuccess)}</div>
+          <div class="record-summary-value record-summary-value--ok">${fmtInt(overallSuccess)}</div>
         </div>
         <div class="record-summary-cell">
           <div class="record-summary-label">Errors</div>
-          <div class=${'record-summary-value' + (totalError > 0 ? ' record-summary-value--bad' : '')}>${fmtInt(totalError)}</div>
+          <div class=${'record-summary-value' + (overallError > 0 ? ' record-summary-value--bad' : '')}>${fmtInt(overallError)}</div>
         </div>
         <div class="record-summary-cell" title="Errors as % of total records">
           <div class="record-summary-label">Err %</div>
@@ -92,6 +97,12 @@ export function RecordProcessing({ phases }) {
           <div class="record-summary-label">Lag</div>
           <div class=${'record-summary-value' + (recordsLag > 100 ? ' record-summary-value--warn' : '')}>${fmtInt(recordsLag)}</div>
         </div>
+        ${resultCache ? html`
+          <div class="record-summary-cell" title="Historical successful cache entries plus current-run results">
+            <div class="record-summary-label">Overall</div>
+            <div class="record-summary-value">${fmtNumber(resultCache.overallProgressPercent ?? 0, 1)}%</div>
+          </div>
+        ` : null}
         ${activeEta != null ? html`
           <div class="record-summary-cell" title="Estimated seconds until all records are processed (longest active phase)">
             <div class="record-summary-label">ETA</div>

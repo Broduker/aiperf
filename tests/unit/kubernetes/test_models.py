@@ -941,6 +941,30 @@ class TestAIPerfJobInfoMetrics:
         assert info.error_rate == pytest.approx(0.005)
         assert info.throughput_rps == 8.0
 
+    def test_result_cache_overrides_live_progress_and_error_projection(self) -> None:
+        raw = _make_raw_aiperfjob(
+            status={
+                "phase": "Running",
+                "liveSummary": {"error_rate": 0.0},
+                "resultCache": {
+                    "totalSamples": 100,
+                    "cachedSuccessSamples": 60,
+                    "currentSuccessSamples": 30,
+                    "currentErrorSamples": 10,
+                    "overallSuccessSamples": 90,
+                    "overallErrorSamples": 10,
+                    "overallProcessedSamples": 100,
+                    "overallProgressPercent": 100.0,
+                    "overallErrorRate": 0.1,
+                },
+            }
+        )
+        info = AIPerfJobCR.model_validate(raw).to_info()
+        assert info.progress_percent == 100.0
+        assert info.total_requests == 100
+        assert info.error_rate == 0.1
+        assert info.result_cache is not None
+
     def test_total_requests_falls_back_to_request_count_avg(self) -> None:
         """Older statuses without the derived `total_requests` scalar still work."""
         raw = _make_raw_aiperfjob(

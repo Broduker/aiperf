@@ -210,6 +210,36 @@ class PhaseProgress(K8sCamelModel):
     )
 
 
+class ResultCacheProgress(K8sCamelModel):
+    """Overall progress and error accounting across reused and fresh samples."""
+
+    total_samples: int = Field(ge=0, description="Total samples in the current input.")
+    cached_success_samples: int = Field(
+        ge=0, description="Samples reused from historical successful RAW results."
+    )
+    current_success_samples: int = Field(
+        ge=0, description="Successful samples processed by the current run."
+    )
+    current_error_samples: int = Field(
+        ge=0, description="Errored samples processed by the current run."
+    )
+    overall_success_samples: int = Field(
+        ge=0, description="Historical cached successes plus current successes."
+    )
+    overall_error_samples: int = Field(
+        ge=0, description="Errors observed by the current run."
+    )
+    overall_processed_samples: int = Field(
+        ge=0, description="Cached successes plus current successes and errors."
+    )
+    overall_progress_percent: FiniteFloat = Field(
+        ge=0.0, le=100.0, description="Overall progress including reused samples."
+    )
+    overall_error_rate: FiniteFloat = Field(
+        ge=0.0, le=1.0, description="Overall error rate including reused successes."
+    )
+
+
 # Derived scalars that are 0..1 fractions rather than human-scale metric
 # values. The 2-decimal display rounding applied to every other float would
 # destroy them: a 0.4% error rate would round to exactly 0.0 (hiding real

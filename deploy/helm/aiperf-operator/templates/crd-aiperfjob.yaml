@@ -1365,6 +1365,46 @@ spec:
                   type: object
                   description: Phase progress stats
                   x-kubernetes-preserve-unknown-fields: true
+              resultCache:
+                type: object
+                description: Overall progress and error accounting including reused samples
+                properties:
+                  totalSamples:
+                    type: integer
+                    format: int64
+                    minimum: 0
+                  cachedSuccessSamples:
+                    type: integer
+                    format: int64
+                    minimum: 0
+                  currentSuccessSamples:
+                    type: integer
+                    format: int64
+                    minimum: 0
+                  currentErrorSamples:
+                    type: integer
+                    format: int64
+                    minimum: 0
+                  overallSuccessSamples:
+                    type: integer
+                    format: int64
+                    minimum: 0
+                  overallErrorSamples:
+                    type: integer
+                    format: int64
+                    minimum: 0
+                  overallProcessedSamples:
+                    type: integer
+                    format: int64
+                    minimum: 0
+                  overallProgressPercent:
+                    type: number
+                    minimum: 0
+                    maximum: 100
+                  overallErrorRate:
+                    type: number
+                    minimum: 0
+                    maximum: 1
               requestsCompleted:
                 type: integer
                 format: int64

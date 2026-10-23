@@ -2176,7 +2176,8 @@ export function JobDetail({ namespace, name, epoch }) {
         `}
       </div>
       <div style="margin-bottom: var(--space-6)" title=${isRunning ? 'Live values — still updating' : (isFinal ? 'Final values for this run' : '')}>
-        <${RealtimeKpiGrid} summary=${summary} slos=${slos} timeseries=${liveData.timeseries} />
+        <${RealtimeKpiGrid} summary=${summary} slos=${slos}
+          resultCache=${status.resultCache} timeseries=${liveData.timeseries} />
         ${isFinal && results && html`
           <div style="margin-top: var(--space-4)">
             <${TokenEfficiencyCard} results=${results} info=${info} />
@@ -2202,7 +2203,7 @@ export function JobDetail({ namespace, name, epoch }) {
 
           ${showLiveRunPanels && Object.keys(rawPhases).length > 0 && html`
             <div style="margin-bottom: var(--space-4)">
-              <${RecordProcessing} phases=${rawPhases} />
+              <${RecordProcessing} phases=${rawPhases} resultCache=${status.resultCache} />
             </div>
           `}
 
