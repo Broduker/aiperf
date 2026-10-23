@@ -3,6 +3,7 @@
 
 import { html } from 'htm/preact';
 import { fmtInt, fmtNumber, fmtReqPerSecond } from '../lib/format.js';
+import { withCacheProgress } from '../pages/job-detail-state.js';
 
 /**
  * Records-processing panel — visualises the records-manager pipeline that
@@ -20,6 +21,7 @@ import { fmtInt, fmtNumber, fmtReqPerSecond } from '../lib/format.js';
  */
 export function RecordProcessing({ phases, resultCache }) {
   const phaseEntries = Object.entries(phases ?? {});
+  const displayPhaseEntries = Object.entries(withCacheProgress(phases ?? {}, resultCache));
   if (phaseEntries.length === 0 && !resultCache) return null;
 
   // Aggregate across all phases for the headline numbers.
@@ -122,7 +124,7 @@ export function RecordProcessing({ phases, resultCache }) {
           </tr>
         </thead>
         <tbody>
-          ${phaseEntries.map(([name, p]) => {
+          ${displayPhaseEntries.map(([name, p]) => {
             if (p == null || typeof p !== 'object') return null;
             const rs = p.recordsSuccess ?? 0;
             const re = p.recordsError ?? 0;

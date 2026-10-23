@@ -8,7 +8,7 @@ import { openJobWs } from '../lib/job-ws.js';
 import { API_BASE } from '../lib/base-path.js';
 import { buildRunSelectorRows } from '../lib/run-selector.js';
 import { phaseColor, colors, palette } from '../lib/theme.js';
-import { deriveJobRunState } from './job-detail-state.js';
+import { deriveJobRunState, withCacheProgress } from './job-detail-state.js';
 import { navigate, replaceRoute } from '../lib/router.js';
 import { KpiCard } from '../components/kpi-card.js';
 import { RealtimeKpiGrid } from '../components/realtime-kpi-grid.js';
@@ -1911,7 +1911,8 @@ export function JobDetail({ namespace, name, epoch }) {
   // ``p`` may be null briefly during a phase transition, so ``?.`` the inner
   // reads. Operator emits camelCase per CRD convention; no snake fallback.
   const rawPhases = status.phases ?? {};
-  const phasesArray = Object.entries(rawPhases).map(([phaseName, p]) => ({
+  const displayPhases = withCacheProgress(rawPhases, status.resultCache);
+  const phasesArray = Object.entries(displayPhases).map(([phaseName, p]) => ({
     name: phaseName,
     completed: p?.requestsCompleted ?? 0,
     total: p?.requestsTotal ?? 0,

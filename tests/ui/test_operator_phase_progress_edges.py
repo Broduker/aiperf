@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+from tests.ui.node_utils import run_node
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PHASE_BAR_JS = (
@@ -70,7 +73,7 @@ def test_phase_ordering_preserves_operator_status_order() -> None:
         phase_src.index("${phases.map") : phase_src.index("</div>\n  `;")
     ]
 
-    assert "Object.entries(rawPhases).map(([phaseName, p]) => ({" in phase_mapping
+    assert "Object.entries(displayPhases).map(([phaseName, p]) => ({" in phase_mapping
     assert "${phases.map((phase) => {" in phase_bar_loop
     assert ".sort(" not in phase_mapping
     assert ".sort(" not in phase_bar_loop
@@ -84,3 +87,56 @@ def test_phase_progress_components_keep_narrow_view_overflow_bounded() -> None:
     assert '<div class="phase-bar" style="min-width:0;max-width:100%">' in phase_src
     assert 'style="min-width:0;flex:1 1 0"' in phase_src
     assert "overflow:hidden;text-overflow:ellipsis;white-space:nowrap" in phase_src
+
+
+def test_cache_phase_progress_uses_historical_successes_without_mutating_pipeline() -> (
+    None
+):
+    module = _JOB_DETAIL_JS.with_name("job-detail-state.js")
+    result = json.loads(
+        run_node(
+            f"""
+            import {{ withCacheProgress }} from {module.as_uri()!r};
+            const phases = {{ profiling: {{
+                requestsCompleted: 5, requestsTotal: 40,
+                recordsSuccess: 3, recordsError: 2, recordsProgressPercent: 12.5,
+                recordsPerSecond: 7, isRecordsComplete: false,
+            }} }};
+            const cache = {{
+                totalSamples: 100, overallSuccessSamples: 63,
+                overallErrorSamples: 7, overallProcessedSamples: 70,
+                overallProgressPercent: 63,
+            }};
+            console.log(JSON.stringify({{
+                display: withCacheProgress(phases, cache), original: phases,
+            }}));
+            """
+        )
+    )
+    phase = result["display"]["profiling"]
+    assert phase["requestsCompleted"] == phase["recordsSuccess"] == 63
+    assert phase["requestsTotal"] == 100
+    assert phase["recordsError"] == 7
+    assert phase["recordsProgressPercent"] == phase["requestsProgressPercent"] == 63
+    assert phase["recordsPerSecond"] == 7
+    assert phase["isRecordsComplete"] is False
+    assert result["original"]["profiling"]["requestsCompleted"] == 5
+    assert result["original"]["profiling"]["recordsError"] == 2
+
+
+def test_non_cache_and_multi_phase_progress_preserve_runtime_counts() -> None:
+    module = _JOB_DETAIL_JS.with_name("job-detail-state.js")
+    result = json.loads(
+        run_node(
+            f"""
+            import {{ withCacheProgress }} from {module.as_uri()!r};
+            const phases = {{ warmup: {{ requestsCompleted: 10 }}, profiling: null }};
+            console.log(JSON.stringify([
+                withCacheProgress(phases, null) === phases,
+                withCacheProgress(phases, {{ overallSuccessSamples: 63 }}) === phases,
+                withCacheProgress({{}}, {{ overallSuccessSamples: 63 }}),
+            ]));
+            """
+        )
+    )
+    assert result == [True, True, {}]

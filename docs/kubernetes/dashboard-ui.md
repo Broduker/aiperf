@@ -471,8 +471,10 @@ rate, and Success Rate is its complement. A failed sample is counted once until 
 verified success exists for its ID and request payload. Never-executed samples
 are excluded from the rate; successful recovery removes a historical failure.
 Overall progress counts successful samples against the original input total.
-Per-phase counters and throughput/latency describe the current run. These
-overall counters remain on the job status after completion.
+The Phases bar and Record Processing Progress use these same overall successful
+samples and original input total. Pipeline lag, processing rate and performance
+metrics describe the current run. Overall counters remain on the job status
+after completion.
 
 ## Troubleshooting
 

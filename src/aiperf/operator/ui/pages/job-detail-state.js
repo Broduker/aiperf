@@ -33,3 +33,16 @@ export function deriveJobRunState({ phase, epoch, runEpoch }) {
     showLiveRunPanels: !isTerminal,
   };
 }
+
+export function withCacheProgress(phases, resultCache) {
+  if (!resultCache || Object.keys(phases).length !== 1) return phases;
+  return Object.fromEntries(Object.entries(phases).map(([name, phase]) => [name, {
+    ...phase,
+    requestsCompleted: resultCache.overallSuccessSamples,
+    requestsTotal: resultCache.totalSamples,
+    requestsProgressPercent: resultCache.overallProgressPercent,
+    recordsSuccess: resultCache.overallSuccessSamples,
+    recordsError: resultCache.overallErrorSamples,
+    recordsProgressPercent: resultCache.overallProgressPercent,
+  }]));
+}
