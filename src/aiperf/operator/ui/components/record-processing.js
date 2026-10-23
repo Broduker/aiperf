@@ -20,7 +20,7 @@ import { fmtInt, fmtNumber, fmtReqPerSecond } from '../lib/format.js';
  */
 export function RecordProcessing({ phases, resultCache }) {
   const phaseEntries = Object.entries(phases ?? {});
-  if (phaseEntries.length === 0) return null;
+  if (phaseEntries.length === 0 && !resultCache) return null;
 
   // Aggregate across all phases for the headline numbers.
   let totalSuccess = 0;
@@ -72,21 +72,21 @@ export function RecordProcessing({ phases, resultCache }) {
 
       <div class="record-summary">
         <div class="record-summary-cell">
-          <div class="record-summary-label">Total</div>
-          <div class="record-summary-value">${fmtInt(overallTotal)}</div>
+          <div class="record-summary-label">${resultCache ? 'Samples' : 'Total'}</div>
+          <div class="record-summary-value">${fmtInt(resultCache?.totalSamples ?? overallTotal)}</div>
         </div>
         <div class="record-summary-cell">
           <div class="record-summary-label">Success</div>
           <div class="record-summary-value record-summary-value--ok">${fmtInt(overallSuccess)}</div>
         </div>
         <div class="record-summary-cell">
-          <div class="record-summary-label">Errors</div>
+          <div class="record-summary-label">${resultCache ? 'Unsuccessful' : 'Errors'}</div>
           <div class=${'record-summary-value' + (overallError > 0 ? ' record-summary-value--bad' : '')}>${fmtInt(overallError)}</div>
         </div>
-        <div class="record-summary-cell" title="Errors as % of total records">
-          <div class="record-summary-label">Err %</div>
+        <div class="record-summary-cell" title=${resultCache ? 'Distinct executed samples without a verified success across all runs / distinct executed samples' : 'Errors as % of total records'}>
+          <div class="record-summary-label">${resultCache ? 'Sample Failure %' : 'Err %'}</div>
           <div class=${'record-summary-value' + (errorPct >= 1 ? ' record-summary-value--bad' : errorPct > 0 ? ' record-summary-value--warn' : '')}>
-            ${totalRecords > 0 ? fmtNumber(errorPct, errorPct < 1 ? 2 : 1) + '%' : '---'}
+            ${overallTotal > 0 ? fmtNumber(errorPct, errorPct < 1 ? 2 : 1) + '%' : '---'}
           </div>
         </div>
         <div class="record-summary-cell" title="Records currently being processed per second (sum across active phases)">
@@ -98,9 +98,13 @@ export function RecordProcessing({ phases, resultCache }) {
           <div class=${'record-summary-value' + (recordsLag > 100 ? ' record-summary-value--warn' : '')}>${fmtInt(recordsLag)}</div>
         </div>
         ${resultCache ? html`
-          <div class="record-summary-cell" title="Historical successful cache entries plus current-run results">
-            <div class="record-summary-label">Overall</div>
+          <div class="record-summary-cell" title="Verified successful samples / all input samples">
+            <div class="record-summary-label">Successful</div>
             <div class="record-summary-value">${fmtNumber(resultCache.overallProgressPercent ?? 0, 1)}%</div>
+          </div>
+          <div class="record-summary-cell" title="Distinct samples with a completed execution in any run">
+            <div class="record-summary-label">Executed</div>
+            <div class="record-summary-value">${fmtInt(overallTotal)}</div>
           </div>
         ` : null}
         ${activeEta != null ? html`

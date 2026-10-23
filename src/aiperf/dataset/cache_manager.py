@@ -19,6 +19,7 @@ from aiperf.common.models.dataset_models import CacheReport, CacheSource
 from aiperf.common.models.model_endpoint_info import ModelEndpointInfo
 from aiperf.config.resolution.plan import BenchmarkRun
 from aiperf.dataset.payload_formatting import format_conversation_payloads
+from aiperf.kubernetes.crd_models import ResultCacheProgress
 
 
 def payload_fingerprint(payload: dict[str, Any]) -> str:
@@ -116,19 +117,38 @@ def _record_identity(record: Any) -> tuple[str, str] | None:
     return session_id, payload_fingerprint(payload)
 
 
+def _attempt_identity(record: dict[str, Any]) -> tuple[str, str] | None:
+    metadata = record.get("metadata") or {}
+    payload = record.get("payload")
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("benchmark_phase") != "profiling"
+        or metadata.get("turn_index") != 0
+        or not isinstance(payload, dict)
+        or not payload.get("model")
+    ):
+        return None
+    session_id = metadata.get("conversation_id")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    return session_id, payload_fingerprint(payload)
+
+
 class CacheManager:
     """Recover durable RAW shards using a disk-only success index.
 
-    Only preparation and final export update the index. Record processors write
-    independent append-only shards; they never write SQLite or another copy of
-    the response body. All synchronous methods run on service I/O threads.
+    Preparation, progress readers and final export update the index under a
+    shared lock. Record processors only append independent RAW shards. All
+    synchronous methods run on service I/O threads.
     """
 
     def __init__(self, run: BenchmarkRun, *, prepare: bool = True) -> None:
         self.run = run
-        cache_dir = run.cfg.get_default_dataset().cache_dir
+        dataset = run.cfg.get_default_dataset()
+        cache_dir = dataset.cache_dir
         if cache_dir is None:
             raise ValueError("CacheManager requires cache_dir")
+        self.input_path = dataset.path.expanduser().resolve()
         self.cache_dir = cache_dir.expanduser().resolve()
         self.records_dir = self.cache_dir / "records"
         self.records_dir.mkdir(parents=True, exist_ok=True)
@@ -189,6 +209,17 @@ class CacheManager:
         """Index only new complete lines, leaving interrupted tails untouched."""
         assert self.index is not None
         with FileLock(self.cache_dir / "index.lock", timeout=60):
+            if not self.index.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='attempts'"
+            ).fetchone():
+                self.index.execute("BEGIN")
+                self.index.execute(
+                    "CREATE TABLE attempts (id TEXT, fingerprint TEXT, PRIMARY KEY(id, fingerprint))"
+                )
+                self.index.execute("UPDATE shards SET offset=0, line=0")
+                self.index.execute(
+                    "INSERT OR IGNORE INTO attempts SELECT id, fingerprint FROM successes"
+                )
             paths = sorted(self.records_dir.rglob("*.jsonl"))
             present = {str(path.relative_to(self.cache_dir)) for path in paths}
             known = {row[0] for row in self.index.execute("SELECT source FROM shards")}
@@ -209,10 +240,7 @@ class CacheManager:
         snapshot = path.stat()
         if path.resolve() != path.absolute() or path.is_symlink():
             raise ValueError(f"Durable result shard must not be a symlink: {path}")
-        if (
-            path.resolve()
-            == self.run.cfg.get_default_dataset().path.expanduser().resolve()
-        ):
+        if path.resolve() == self.input_path:
             raise ValueError("The input dataset must not be stored among result shards")
         row = self.index.execute(
             "SELECT offset, line, device, inode FROM shards WHERE source=?", (source,)
@@ -253,6 +281,8 @@ class CacheManager:
         self.report.scanned_records += 1
         if not isinstance(record, dict):
             raise ValueError(f"RAW record must be an object at {source}:{line_number}")
+        if attempt := _attempt_identity(record):
+            self.index.execute("INSERT OR IGNORE INTO attempts VALUES (?, ?)", attempt)
         identity = _record_identity(record)
         if identity is None:
             self.report.ignored_records += 1
@@ -325,6 +355,51 @@ class CacheManager:
         temporary = self.directory / "report.json.tmp"
         temporary.write_bytes(self.report.model_dump_json(indent=2).encode())
         temporary.replace(self.directory / "report.json")
+
+    @staticmethod
+    def read_progress(
+        run: BenchmarkRun, *, current_errors: int = 0
+    ) -> ResultCacheProgress | None:
+        """Count distinct executed inputs without forgetting historical failures.
+
+        A verified success is permanent for an ID/payload pair. Failed retries
+        never add another sample or undo a success. Incomplete RAW tails and
+        first attempts without a completed RAW record remain uncounted.
+        """
+        directory = run.cfg.artifacts.dir / "result_cache"
+        if not (directory / "report.json").is_file():
+            return None
+        cache = CacheManager(run, prepare=False)
+        try:
+            report = CacheReport.model_validate(
+                orjson.loads((directory / "report.json").read_bytes())
+            )
+            assert cache.index is not None
+            cache.index.execute(
+                "ATTACH DATABASE ? AS selected_inputs",
+                (str(directory / "index.sqlite3"),),
+            )
+            total, successful, attempted = cache.index.execute(
+                "SELECT count(*), coalesce(sum(s.id IS NOT NULL), 0), "
+                "coalesce(sum(s.id IS NOT NULL OR a.id IS NOT NULL), 0) "
+                "FROM selected_inputs.inputs AS i "
+                "LEFT JOIN successes AS s ON i.id=s.id AND i.fingerprint=s.fingerprint "
+                "LEFT JOIN attempts AS a ON i.id=a.id AND i.fingerprint=a.fingerprint"
+            ).fetchone()
+            unsuccessful = attempted - successful
+            return ResultCacheProgress(
+                total_samples=total,
+                cached_success_samples=report.cached_samples,
+                current_success_samples=max(0, successful - report.cached_samples),
+                current_error_samples=current_errors,
+                overall_success_samples=successful,
+                overall_error_samples=unsuccessful,
+                overall_processed_samples=attempted,
+                overall_progress_percent=100.0 * successful / total if total else 0.0,
+                overall_error_rate=unsuccessful / attempted if attempted else 0.0,
+            )
+        finally:
+            cache.close()
 
     def export(self, output: Path) -> int:
         """Atomically export one success per current input, in input order.

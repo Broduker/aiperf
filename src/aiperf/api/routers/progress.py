@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter
@@ -43,6 +44,7 @@ from aiperf.controller.system_controller_models import (
     AggregateWorkerStatus,
     build_aggregate_worker_status,
 )
+from aiperf.dataset.cache_manager import CacheManager
 from aiperf.kubernetes.constants import (
     JSON_PATCH_CONTENT_TYPE,
     MERGE_PATCH_CONTENT_TYPE,
@@ -142,42 +144,6 @@ def _current_phase_name(phases: dict[str, CombinedPhaseStats]) -> str | None:
     return max(
         _concrete_phases(phases).items(), key=lambda item: item[1].start_ns or 0
     )[0]
-
-
-def _build_result_cache_progress(
-    phases: dict[str, CombinedPhaseStats], report: CacheReport | None
-) -> ResultCacheProgress | None:
-    """Combine historical cache hits with current profiling record counters."""
-    if report is None or report.total_samples <= 0:
-        return None
-
-    current_success = 0
-    current_error = 0
-    for stats in _concrete_phases(phases).values():
-        phase_kind = str(stats.phase_kind or stats.phase)
-        if phase_kind.lower() not in {"profiling", "creditphase.profiling"}:
-            continue
-        current_success += stats.success_records
-        current_error += stats.error_records
-
-    cached_success = report.cached_samples
-    overall_success = cached_success + current_success
-    overall_error = current_error
-    processed = min(report.total_samples, overall_success + overall_error)
-    progress = 100.0 * processed / report.total_samples
-    error_rate = overall_error / processed if processed else 0.0
-
-    return ResultCacheProgress(
-        total_samples=report.total_samples,
-        cached_success_samples=cached_success,
-        current_success_samples=current_success,
-        current_error_samples=current_error,
-        overall_success_samples=overall_success,
-        overall_error_samples=overall_error,
-        overall_processed_samples=processed,
-        overall_progress_percent=min(100.0, progress),
-        overall_error_rate=min(1.0, error_rate),
-    )
 
 
 def _result_cache_status_patch(
@@ -283,6 +249,9 @@ class ProgressRouter(
         self._results_exported: bool = False
         self._controller_failure: str | None = None
         self._result_cache_report: CacheReport | None = None
+        self._result_cache_snapshot: ResultCacheProgress | None = None
+        self._result_cache_snapshot_at = 0.0
+        self._result_cache_snapshot_lock = asyncio.Lock()
         # Mirrors SystemController's outer-lifecycle SystemState. Updated via
         # SYSTEM_STATE_CHANGED bus messages so the API sidecar (which lives in
         # a separate container) can surface controller-side state on
@@ -301,6 +270,28 @@ class ProgressRouter(
 
     def get_router(self) -> APIRouter:
         return progress_router
+
+    async def _get_result_cache_progress(self) -> ResultCacheProgress | None:
+        """Refresh the durable sample ledger off the event loop, at most every 5s."""
+        if getattr(self.run.cfg.get_default_dataset(), "cache_dir", None) is None:
+            return None
+        async with self._result_cache_snapshot_lock:
+            if (
+                self._result_cache_snapshot is not None
+                and time.monotonic() - self._result_cache_snapshot_at < 5.0
+                and not self._results_exported
+            ):
+                return self._result_cache_snapshot
+            current_errors = sum(
+                stats.error_records
+                for stats in _concrete_phases(self._progress_tracker._phases).values()
+                if str(stats.phase_kind or stats.phase).lower() == "profiling"
+            )
+            self._result_cache_snapshot = await asyncio.to_thread(
+                CacheManager.read_progress, self.run, current_errors=current_errors
+            )
+            self._result_cache_snapshot_at = time.monotonic()
+            return self._result_cache_snapshot
 
     def _schedule_status_push(self) -> None:
         """Request an AIPerfJob status push, but only in Kubernetes mode.
@@ -469,9 +460,7 @@ class ProgressRouter(
                 workers=build_aggregate_worker_status(
                     self._pod_state_tracker.pod_states
                 ),
-                result_cache=_build_result_cache_progress(
-                    dict(self._progress_tracker._phases), self._result_cache_report
-                ),
+                result_cache=await self._get_result_cache_progress(),
             )
         except Exception:  # noqa: BLE001
             self.debug("Failed to push AIPerfJob status update")
@@ -1016,9 +1005,7 @@ async def get_progress(
     """Get benchmark progress with full phase stats."""
     return ProgressResponse(
         phases=component._progress_tracker._phases,
-        result_cache=_build_result_cache_progress(
-            dict(component._progress_tracker._phases), component._result_cache_report
-        ),
+        result_cache=await component._get_result_cache_progress(),
         workers=await _get_controller_workers(conn, component),
         results_exported=component._results_exported,
         system_state=component._system_state,

@@ -138,6 +138,84 @@ def test_pending_close_releases_index_read_snapshot(tmp_path: Path) -> None:
         cache.close()
 
 
+def test_sample_failure_rate_tracks_unique_inputs_across_retries(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path)
+    samples = [conversation(str(index)) for index in range(4)]
+    good = raw_record(run, samples[0])
+    failure = {
+        **raw_record(run, samples[1]),
+        "status": 503,
+        "error": {"message": "failed"},
+    }
+    unrelated = {**raw_record(run, conversation("other")), "status": 500}
+    write_shard(run, [good, failure, failure, unrelated])
+    cache = CacheManager(run)
+    try:
+        assert len(list(cache.pending(samples))) == 3
+        cache.save_report()
+        before = CacheManager.read_progress(run)
+        assert before.total_samples == 4
+        assert before.overall_processed_samples == 2
+        assert before.overall_error_samples == 1
+        assert before.overall_error_rate == 0.5
+        assert before.overall_progress_percent == 25.0
+
+        write_shard(run, [failure, raw_record(run, samples[1]), failure])
+        recovered = CacheManager.read_progress(run)
+        assert recovered.overall_processed_samples == 2
+        assert recovered.overall_success_samples == 2
+        assert recovered.overall_error_samples == 0
+        assert recovered.overall_error_rate == 0.0
+        assert recovered.overall_progress_percent == 50.0
+
+        write_shard(run, [{**raw_record(run, samples[2]), "status": 500}])
+        after = CacheManager.read_progress(run)
+        assert after.overall_processed_samples == 3
+        assert after.overall_error_samples == 1
+        assert after.overall_error_rate == pytest.approx(1 / 3)
+    finally:
+        cache.close()
+
+
+def test_sample_failure_rate_backfills_legacy_success_index(tmp_path: Path) -> None:
+    run = make_run(tmp_path)
+    failed = conversation("failed")
+    write_shard(run, [{**raw_record(run, failed), "status": 500}])
+    cache = CacheManager(run)
+    list(cache.pending([failed, conversation("never-executed")]))
+    cache.save_report()
+    cache.index.execute("DROP TABLE attempts")
+    cache.index.commit()
+    cache.close()
+
+    progress = CacheManager.read_progress(run)
+    assert progress.overall_processed_samples == 1
+    assert progress.overall_error_samples == 1
+    assert progress.overall_error_rate == 1.0
+    assert progress.overall_progress_percent == 0.0
+
+
+def test_sample_failure_rate_excludes_changed_payload_and_incomplete_tail(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path)
+    sample = conversation()
+    shard = write_shard(run, [raw_record(run, conversation(text="old-payload"))])
+    with shard.open("ab") as target:
+        target.write(orjson.dumps(raw_record(run, sample)))
+    cache = CacheManager(run)
+    list(cache.pending([sample]))
+    cache.save_report()
+    cache.close()
+
+    progress = CacheManager.read_progress(run)
+    assert progress.overall_processed_samples == 0
+    assert progress.overall_error_rate == 0.0
+    assert progress.overall_progress_percent == 0.0
+
+
 @pytest.mark.parametrize("fail", [False, True])
 def test_pending_nested_call_preserves_outer_read_transaction(
     tmp_path: Path, fail: bool

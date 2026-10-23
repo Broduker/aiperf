@@ -216,10 +216,16 @@ optional and serialize as `null` when the CR status has not reported them.
 For cache-resumed runs, `resultCache` contains historical cached successes,
 current successes/errors, and overall sample totals. `progressPercent`,
 `totalRequests`, and `errorRate` use these overall counters when available.
-The overall error rate is current errors divided by cached successes plus
-current successes and errors. For example, 60 cached successes, 30 new
-successes, and 10 new errors give 100 processed samples, 100% progress, and
-a 10% overall error rate. Performance metrics continue to describe this run.
+The sample failure rate is distinct executed
+samples without a verified success in any run divided by distinct executed
+samples. Repeated failures count once; a later success removes that sample
+from failures permanently for the same ID and request payload. Never-executed
+inputs are excluded from this denominator. Progress is verified successful
+samples divided by the full input count, including cached successes. For
+example, 60 historical successes, 10 unresolved historical failures and 30
+unexecuted inputs give 60% progress and a sample failure rate of 10/70.
+Performance metrics continue to describe this run. Buffered RAW records become
+visible after a complete line is flushed; progress snapshots refresh every 5s.
 The controller exposes the same accounting as `result_cache` in
 `GET /api/progress`; completion refreshes `status.resultCache` before teardown.
 

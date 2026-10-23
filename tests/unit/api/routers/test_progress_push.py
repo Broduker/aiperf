@@ -36,6 +36,7 @@ def _make_router():
     r._controller_failure = None
     r._server_metrics = None
     r._result_cache_report = None
+    r._get_result_cache_progress = AsyncMock(return_value=None)
     r._metrics = []
     r._progress_tracker = MagicMock()
     r._progress_tracker._phases = {}

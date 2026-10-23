@@ -276,7 +276,7 @@ function ReliabilityTile({ summary, slos, resultCache, timeseries }) {
   const ts = timeseries ?? {};
   const hasSlo = slos && Object.keys(slos).length > 0;
 
-  if (hasSlo) {
+  if (hasSlo && !resultCache) {
     const gp = summary['goodput'] ?? summary['good_request_count'] ?? null;
     const { value: primary } = pickStat(gp, 'avg');
     const goodCount = summary['good_request_count'];
@@ -384,21 +384,21 @@ function ReliabilityTile({ summary, slos, resultCache, timeseries }) {
     <div class=${'kpi-tile kpi-tile--slo-' + kind} key="success-rate">
       <div class="kpi-tile-head">
         <div class="kpi-tile-label">
-          <span>Success Rate</span>
-          <span class="kpi-tile-primary-stat">reliability</span>
+          <span>${resultCache ? 'Sample Failure Rate' : 'Success Rate'}</span>
+          <span class="kpi-tile-primary-stat">${resultCache ? 'across runs' : 'reliability'}</span>
         </div>
         <span class=${'kpi-chip kpi-chip--' + kind}>
           ${kind === 'good' ? '✓' : '✗'}
-          <span class="kpi-chip-thresh">${kind === 'good' ? '0 errors' : errorLabel}</span>
+          <span class="kpi-chip-thresh">${resultCache ? fmtInt(errVal) + ' unsuccessful' : (kind === 'good' ? '0 errors' : errorLabel)}</span>
         </span>
       </div>
       <div class="kpi-big">
-        <span class="kpi-big-val">${fmtPassRate(success, 2)}</span>
+        <span class="kpi-big-val">${fmtPassRate(resultCache ? rate : success, 2)}</span>
       </div>
-      <${Sparkline} points=${sparkPoints} stroke=${sparkStroke} fill=${sparkFill}
+      <${Sparkline} points=${resultCache ? [] : sparkPoints} stroke=${sparkStroke} fill=${sparkFill}
                     width=${140} height=${26} />
       <div class="kpi-tile-sub">
-        <span>errors</span>
+        <span>${resultCache ? 'unsuccessful / executed samples' : 'errors'}</span>
         <span class="kpi-tile-sub-val">${totalRequests != null
           ? fmtInt(errVal ?? 0) + ' of ' + fmtInt(totalRequests)
           : errorLabel}</span>

@@ -465,11 +465,13 @@ tablet widths; very narrow viewports are not a supported target.
 
 ---
 
-Cache-resumed jobs include historical successful samples in overall progress,
-the Success Rate tile, and Record Processing totals. Errors count this run's
-failures; cached successes contribute to the denominator. Per-phase counters
-and throughput/latency describe the current run. These overall counters remain
-on the job status after completion.
+Cache-resumed jobs show the original Samples total, distinct Executed samples,
+and Sample Failure rate across runs. A failed sample is counted once until a
+verified success exists for its ID and request payload. Never-executed samples
+are excluded from the rate; successful recovery removes a historical failure.
+Overall progress counts successful samples against the original input total.
+Per-phase counters and throughput/latency describe the current run. These
+overall counters remain on the job status after completion.
 
 ## Troubleshooting
 

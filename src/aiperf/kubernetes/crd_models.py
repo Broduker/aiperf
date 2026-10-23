@@ -227,16 +227,21 @@ class ResultCacheProgress(K8sCamelModel):
         ge=0, description="Historical cached successes plus current successes."
     )
     overall_error_samples: int = Field(
-        ge=0, description="Errors observed by the current run."
+        ge=0,
+        description="Distinct executed samples with no verified success in any run.",
     )
     overall_processed_samples: int = Field(
-        ge=0, description="Cached successes plus current successes and errors."
+        ge=0, description="Distinct samples with completed execution in any run."
     )
     overall_progress_percent: FiniteFloat = Field(
-        ge=0.0, le=100.0, description="Overall progress including reused samples."
+        ge=0.0,
+        le=100.0,
+        description="Verified successful samples divided by all input samples.",
     )
     overall_error_rate: FiniteFloat = Field(
-        ge=0.0, le=1.0, description="Overall error rate including reused successes."
+        ge=0.0,
+        le=1.0,
+        description="Unsuccessful distinct samples divided by executed distinct samples.",
     )
 
 
