@@ -13,6 +13,7 @@ from aiperf.common.endpoint_credentials import redact_sweep_public_data
 from aiperf.common.finite import FiniteFloat
 from aiperf.common.redact import redact_url
 from aiperf.kubernetes.constants import AIPerfLabels, Annotations, ProgressAnnotations
+from aiperf.kubernetes.crd_models import MetricsSummary
 from aiperf.kubernetes.enums import JobSetStatus
 from aiperf.kubernetes.k8s_models import K8sCamelModel
 
@@ -235,13 +236,21 @@ class CRJobStatus(K8sCamelModel):
         default=None,
         description="Final metrics (MetricsSummary.to_status_dict() format).",
     )
+    live_metrics: dict[str, Any] | None = Field(
+        default=None,
+        description="Unfiltered live metric payload, including canonical error rate.",
+    )
+    results: dict[str, Any] | None = Field(
+        default=None,
+        description="Final metric payload, authoritative after completion.",
+    )
     phases: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
         description="Per-phase progress (PhaseProgress.to_k8s_dict() format).",
     )
     run_epoch: int | None = Field(
         default=None,
-        description="Epoch-seconds key of the most recent successful run. Use as "
+        description="Epoch key of the current run, including while running. Use as "
         "{epoch} in /api/v1/results/<ns>/<name>/runs/<epoch>/ to pin historical artifacts.",
     )
 
@@ -328,7 +337,10 @@ def _total_requests(summary: dict[str, Any]) -> int | None:
 
 
 def _error_rate(summary: dict[str, Any]) -> float | None:
-    """Read the derived ``error_rate`` scalar from a status summary dict."""
+    """Read the canonical percent metric as a fraction, then legacy statuses."""
+    percent = _summary_stat(summary, "request_error_rate", "avg")
+    if percent is not None:
+        return percent / 100.0
     if isinstance(summary, dict):
         raw_err = summary.get("error_rate")
         if isinstance(raw_err, (int, float)):
@@ -397,7 +409,27 @@ class AIPerfJobCR(K8sCamelModel):
         """Convert to flat AIPerfJobInfo for CLI display."""
         # Summary: operator writes nested metric tags via MetricsSummary.from_metrics(),
         # so request_throughput.avg / request_latency.p99 are the canonical reads.
-        summary = self.status.live_summary or self.status.summary or {}
+        terminal = self.status.phase.lower() in {
+            "completed",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "canceled",
+            "error",
+            "archived",
+            "partiallyfailed",
+        }
+        if terminal:
+            summary = self.status.summary or self.status.live_summary or {}
+            metrics = self.status.results
+        else:
+            summary = self.status.live_summary or self.status.summary or {}
+            metrics = None
+        if metrics:
+            summary = {
+                **summary,
+                **MetricsSummary.from_metrics(metrics).to_status_dict(),
+            }
         throughput = _summary_stat(summary, "request_throughput", "avg")
         latency = _summary_stat(summary, "request_latency", "p99")
         sweep_name, variation_index, variation_label, trial_index = _sweep_linkage(
@@ -409,6 +441,9 @@ class AIPerfJobCR(K8sCamelModel):
             namespace=self.metadata.namespace,
             phase=self.status.phase,
             job_id=self.status.job_id or self.metadata.name,
+            run_epoch=str(self.status.run_epoch)
+            if self.status.run_epoch is not None
+            else None,
             jobset_name=self.status.job_set_name,
             workers_ready=self.status.workers.ready,
             workers_total=self.status.workers.total,
@@ -456,6 +491,10 @@ class AIPerfJobInfo(K8sCamelModel):
     namespace: str = Field(description="Kubernetes namespace containing the AIPerfJob.")
     phase: str = Field(description="Current lifecycle phase.")
     job_id: str = Field(description="Operator-assigned job ID.")
+    run_epoch: str | None = Field(
+        default=None,
+        description="Current run epoch, encoded as a string to preserve precision.",
+    )
     jobset_name: str | None = Field(
         default=None, description="Name of the managed JobSet from .status.jobSetName."
     )

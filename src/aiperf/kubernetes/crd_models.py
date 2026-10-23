@@ -214,7 +214,7 @@ class PhaseProgress(K8sCamelModel):
 # values. The 2-decimal display rounding applied to every other float would
 # destroy them: a 0.4% error rate would round to exactly 0.0 (hiding real
 # failures) and a 4.76% rate would inflate to 5%.
-_FRACTION_KEYS: frozenset[str] = frozenset({"error_rate"})
+_FRACTION_KEYS: frozenset[str] = frozenset({"error_rate", "request_error_rate"})
 _FRACTION_NDIGITS = 9
 
 
@@ -334,6 +334,7 @@ _SUMMARY_TAGS: tuple[str, ...] = (
     "request_count",
     "good_request_count",
     "error_request_count",
+    "request_error_rate",
     # Successes + errors, and the source of the derived ``total_requests``.
     # Mirrored so the curated summary shows the input to that scalar; the raw
     # ``error_request_count`` above is ERROR_ONLY and absent on the live path.
@@ -426,18 +427,11 @@ def _derived_scalars(
 
     ``completed_request_count`` is that same sum computed upstream, and it is
     preferred because it is the only total that survives the live path.
-    ``error_request_count`` carries ``MetricFlags.ERROR_ONLY``, which
-    ``records_manager_processing.filter_display_metrics`` strips before anything
-    reaches ``status.liveMetrics`` or ``/api/metrics``, so on a running job the
-    sum would silently lose every failed request.
-
     ``error_rate`` is the fraction (0..1) of that grand total that failed.
     When the authoritative ``request_error_rate`` metric tag (a percent,
     ``100 * errors / total``) is present it is mirrored verbatim (``rate/100``)
-    so ``status.summary`` agrees with the export exactly; otherwise it falls
-    back to ``errors / total``. It is emitted even when no counter was
-    published, which is the all-error live case: every counter is either
-    error-only or has no valid rows, leaving the rate as the sole signal.
+    so ``status.summary`` agrees with the export exactly; otherwise it is
+    derived only when both success and error counters are available.
 
     Prefers the live per-tag counts; falls back to the top-level scalars a
     round-tripped ``status.summary`` / ``profile_export_aiperf.json`` keeps for
@@ -468,7 +462,7 @@ def _derived_scalars(
         # PERCENT unit; clamp so a malformed payload cannot violate the
         # 0..1 bound the CR status and AIPerfJobInfo both declare.
         out["error_rate"] = min(1.0, max(0.0, float(rer) / 100.0))
-    elif total > 0 and not rc_bad and not ec_bad:
+    elif total > 0 and ec is not None and not rc_bad and not ec_bad:
         out["error_rate"] = errors / total
     if "error_rate" not in out and is_finite_value(metrics.get("error_rate")):
         out["error_rate"] = float(metrics["error_rate"])

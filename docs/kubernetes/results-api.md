@@ -102,6 +102,16 @@ reject with `409` and point the caller at `/runs/<epoch>/...`. This keeps a
 caller from pairing a live job status with whichever run `latest.txt` happened
 to point at mid-request.
 
+`status.runEpoch` identifies a job's current run from resource creation onward.
+The job-detail `?epoch=` query returns live status when it matches that epoch;
+other epochs remain isolated historical views. Job-list `runEpoch` is a string.
+The curated metric summaries preserve `request_error_rate.avg` in percent.
+The legacy job-list `errorRate` field is a fraction (percent divided by 100),
+so dashboard and detail report the same cumulative request error rate.
+When older controller images omit that metric from their curated summary,
+the job list reads it from `liveMetrics.metrics`. After completion, final
+`results.metrics` and `summary` take precedence over stale live snapshots.
+
 The per-run file-list response includes `per_record_filename` and
 `server_metrics_filename` when those artifacts are present. Clients should use
 these fields rather than assuming the default filenames: `artifacts.prefix`
@@ -212,7 +222,9 @@ optional and serialize as `null` when the CR status has not reported them.
 
 ### `GET /api/v1/jobs/{namespace}/{name}`
 
-Fetch a single AIPerfJob CR plus its pod roster. Accepts an optional `?epoch=` query parameter to pin the archived half to a specific historical run directory instead of following `latest.txt`.
+Fetch a single AIPerfJob CR plus its pod roster. An optional `?epoch=` query
+returns live state when it matches the CR's current run epoch. Other epochs
+pin the archived view to that historical run directory instead of `latest.txt`.
 
 Archived (PVC-only) jobs have no cluster CR, so the response carries the archived summary with an empty `status` object and an empty `pods` list.
 

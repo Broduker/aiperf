@@ -94,6 +94,18 @@ def test_nested_benchmark_and_sweep_config_are_addressed_by_summary_logic() -> N
     assert "spec.sweep" in body or "benchmark.sweep" in body
 
 
+def test_adaptive_cache_and_sla_configuration_stays_in_yaml_not_summary() -> None:
+    """Full settings stay available in View YAML without duplicating summary tiles."""
+    src = _source(_JOB_DETAIL_JS)
+    body = _function_body(src, "JobConfigSection")
+
+    assert "spec: redactedSpec" in body
+    assert "summaryItems.push({ label: `${pName} Adaptive`" not in body
+    assert "summaryItems.push({ label: `${pName} Duration`" not in body
+    assert "summaryItems.push({ label: `${pName} SLA" not in body
+    assert "summaryItems.push({ label: `${dataset.name ?? 'Dataset'} Cache`" not in body
+
+
 def test_config_modal_uses_yaml_download_and_preserves_long_nested_values() -> None:
     """Long JSON-ish/YAML values should remain readable and downloadable as YAML."""
     src = _source(_JOB_DETAIL_JS)

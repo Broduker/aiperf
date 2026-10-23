@@ -15,7 +15,7 @@ import { RelativeTime } from '../components/time.js';
 import { LoadingPanel } from '../components/spinner.js';
 import { fmtNumber, fmtInt, fmtThroughput, fmtLatencyStr, fmtMilliseconds, fmtReqPerSecond } from '../lib/format.js';
 import { CHART_TYPOGRAPHY } from '../lib/typography.js';
-import { recentJobs } from './dashboard-helpers.js';
+import { jobProgressPercent, recentJobs } from './dashboard-helpers.js';
 
 const shortModel = (m) => (m ? String(m).split('/').pop() : null);
 
@@ -391,7 +391,7 @@ export function Dashboard() {
         `
         : running.map(job => {
             const phase = job.phase ?? 'Unknown';
-            const pct = Math.round(job.progressPercent ?? 0);
+            const pct = jobProgressPercent(job.progressPercent);
             const color = phaseColor(phase);
             const startTime = job.startTime;
             const workersReady = job.workersReady ?? 0;
@@ -472,9 +472,12 @@ export function Dashboard() {
                     ` : null}
                   </div>
                 ` : null}
-                ${pct > 0 ? html`
-                  <div class="progress-track" style="margin-top:8px">
-                    <div class="progress-fill" style=${'width:' + pct + '%;background:' + color} />
+                ${pct != null ? html`
+                  <div class="progress-cell" style="margin-top:8px" data-testid="dashboard-active-progress">
+                    <div class="progress-track" style="flex:1">
+                      <div class="progress-fill" style=${'width:' + pct + '%;background:' + color + (pct > 0 ? ';min-width:2px' : '')} />
+                    </div>
+                    <span class="progress-label">${fmtNumber(pct, 1)}%</span>
                   </div>
                 ` : null}
               </div>

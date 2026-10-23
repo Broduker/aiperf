@@ -143,6 +143,16 @@ configuration. The full route table (`src/aiperf/operator/ui/app.js:52-86`):
 
 Any other path renders a "Not Found" stub.
 
+A pinned job URL for the current run keeps live progress, metrics, and the token
+throughput chart. Only a different historical epoch uses persisted results.
+Active-job cards show fractional progress, including a visible track at 0%.
+Phase bars and job-table rows also retain fractional progress. A positive
+progress value has a minimum visible fill width of two pixels; the numeric
+label shows its actual percentage.
+View YAML includes the full stored spec with credentials redacted. A dataset's
+`cache_dir` is under `benchmark.datasets`, and adaptive scaling and SLA settings
+are under `benchmark.phases`.
+
 ```mermaid
 flowchart TB
     dash["/"] --> Dashboard

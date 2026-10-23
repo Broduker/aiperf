@@ -905,6 +905,42 @@ class TestAIPerfJobInfoMetrics:
         assert info.total_requests is None
         assert info.error_rate is None
 
+    def test_canonical_rate_overrides_stale_legacy_scalar_and_preserves_epoch(
+        self,
+    ) -> None:
+        raw = _make_raw_aiperfjob(
+            status={
+                "runEpoch": 1792676455149719,
+                "liveSummary": {"request_error_rate": {"avg": 0.5}, "error_rate": 0.0},
+            }
+        )
+        info = AIPerfJobCR.model_validate(raw).to_info()
+        assert info.error_rate == pytest.approx(0.005)
+        assert info.run_epoch == "1792676455149719"
+
+    def test_running_list_does_not_read_raw_live_metrics(self) -> None:
+        raw = _make_raw_aiperfjob(
+            status={
+                "phase": "Running",
+                "liveSummary": {"error_rate": 0.0},
+                "liveMetrics": {"metrics": {"request_error_rate": {"avg": 0.5}}},
+            }
+        )
+        assert AIPerfJobCR.model_validate(raw).to_info().error_rate == 0.0
+
+    def test_final_metrics_override_stale_live_summary(self) -> None:
+        raw = _make_raw_aiperfjob(
+            status={
+                "phase": "Completed",
+                "liveSummary": {"error_rate": 0.0, "request_throughput": {"avg": 10.0}},
+                "summary": {"error_rate": 0.01, "request_throughput": {"avg": 8.0}},
+                "results": {"metrics": {"request_error_rate": {"avg": 0.5}}},
+            }
+        )
+        info = AIPerfJobCR.model_validate(raw).to_info()
+        assert info.error_rate == pytest.approx(0.005)
+        assert info.throughput_rps == 8.0
+
     def test_total_requests_falls_back_to_request_count_avg(self) -> None:
         """Older statuses without the derived `total_requests` scalar still work."""
         raw = _make_raw_aiperfjob(

@@ -404,9 +404,8 @@ async def _get_job_impl(
     from the persisted summary plus any ``conditions.json`` on the run
     directory, and ``pods`` comes back empty.
 
-    When ``epoch`` is supplied, the archived half is pinned to that historical
-    run directory rather than ``latest.txt``; ``find_any_job`` likewise refuses
-    to merge the live CR onto a historical epoch (see Task 6).
+    When ``epoch`` matches the current CR run, serve its live status. Other
+    epochs use their historical run directory without merging current state.
 
     Args:
         api: The kubernetes_asyncio ApiClient.

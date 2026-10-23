@@ -8,6 +8,8 @@ export function jobCreatedTs(job) {
   return Number.isFinite(t) ? t : 0;
 }
 
+export { progressPercent as jobProgressPercent } from '../lib/format.js';
+
 export function isRecentJob(job) {
   const phase = (job?.phase ?? '').toLowerCase();
   return phase === 'completed' || phase === 'succeeded' || phase === 'failed' || phase === 'error';

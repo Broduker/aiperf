@@ -729,11 +729,10 @@ async def find_any_job(
 
     If both sources have it, CR wins on live fields and ``source="both"``.
 
-    When ``epoch`` is supplied, the archived half is pinned to
-    ``<results_dir>/<ns>/<name>/<epoch>/`` rather than the ``latest.txt``
-    pointer, and the live CR half is dropped — the
-    live CR always reflects the *current* run, so merging it into a request
-    for a historical epoch would conflate epochs. ``epoch`` of ``"latest"``
+    When ``epoch`` matches the live CR's run epoch, return its live state.
+    Otherwise pin the archived half to ``<results_dir>/<ns>/<name>/<epoch>/``
+    without merging current-run state into a historical view.
+    ``epoch`` of ``"latest"``
     or ``None`` falls through to ``latest.txt`` (legacy behavior).
     """
     cr = await _find_live_cr(api, namespace, name)
@@ -743,8 +742,9 @@ async def find_any_job(
     if pvc is not None:
         _apply_indexed_phase(pvc, await _indexed_row_for(namespace, name, epoch))
 
-    # Caller asked for a specific historical epoch: never merge the live CR.
     if epoch is not None and epoch != "latest":
+        if cr is not None and cr.run_epoch == epoch:
+            return cr
         return pvc
 
     if cr is None:

@@ -4,7 +4,7 @@
 import { html } from 'htm/preact';
 import { useState, useMemo, useEffect, useRef } from 'preact/hooks';
 import { phaseColor, palette } from '../lib/theme.js';
-import { fmtMilliseconds, fmtReqPerSecond } from '../lib/format.js';
+import { fmtMilliseconds, fmtNumber, fmtReqPerSecond, progressPercent } from '../lib/format.js';
 import { navigate } from '../lib/router.js';
 import { NsPill } from './pills.js';
 import { RelativeTime } from './time.js';
@@ -229,20 +229,20 @@ export function JobTable({ jobs, onRowClick, filter, onNamespaceClick, sort, onS
     // label. 100% is the one value a reader acts on -- it is the difference
     // between "wait" and "go look at the results" -- so it is reserved for a
     // reported progress that already reached it, and anything short of that
-    // tops out at 99. Same rule, same reasoning, as components/phase-bar.js:24-33.
+    // tops out at 99.9. Same rule, same reasoning, as components/phase-bar.js:24-33.
     // The same number is the bar's CSS width, so it is also clamped into
     // [0, 100] -- an over- or under-reported percent must not draw a bar
     // longer than its track or a negative one.
-    const rounded = pct >= 100 ? 100 : Math.max(0, Math.min(99, Math.round(pct)));
+    const rounded = progressPercent(pct);
     if ((job.phase ?? '').toLowerCase() !== 'running') {
-      return html`<span class="progress-label">${rounded}%</span>`;
+      return html`<span class="progress-label">${fmtNumber(rounded, 1)}%</span>`;
     }
     return html`
       <div class="progress-cell">
         <div class="progress-track">
-          <div class="progress-fill" style=${'width: ' + rounded + '%'} />
+          <div class="progress-fill" style=${'width: ' + rounded + '%' + (rounded > 0 ? '; min-width: 2px' : '')} />
         </div>
-        <span class="progress-label">${rounded}%</span>
+        <span class="progress-label">${fmtNumber(rounded, 1)}%</span>
       </div>
     `;
   }

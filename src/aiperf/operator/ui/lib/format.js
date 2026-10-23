@@ -73,6 +73,12 @@ export function fmtNumber(value, decimals = 1, fallback = '---') {
   return trimAddedZeros(text, decimals);
 }
 
+export function progressPercent(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  if (value >= 100) return 100;
+  return Math.min(99.9, Math.max(0, value));
+}
+
 /**
  * Pick ONE decimal count for a whole table column.
  *

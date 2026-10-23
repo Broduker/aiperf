@@ -1915,6 +1915,7 @@ export function JobDetail({ namespace, name, epoch }) {
     name: phaseName,
     completed: p?.requestsCompleted ?? 0,
     total: p?.requestsTotal ?? 0,
+    progressPercent: p?.requestsProgressPercent,
   }));
   const pods = job?.pods ?? [];
   const jobError = info.error ?? status.error ?? null;

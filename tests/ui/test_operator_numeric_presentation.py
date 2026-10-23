@@ -254,9 +254,22 @@ def test_job_table_progress_never_reports_100_percent_before_the_job_reports_it(
         ]
     )
 
-    assert "99%" in text
-    assert "100%" not in text
-    assert "width: 99%" in text
+    assert "99.6%" in text
+    assert "100.0%" not in text
+    assert "width: 99.6%" in text
+
+    text = _job_table_text(
+        [
+            {
+                "namespace": "bench",
+                "name": "small",
+                "phase": "Running",
+                "progressPercent": 0.4,
+            }
+        ]
+    )
+    assert "0.4%" in text
+    assert "width: 0.4%; min-width: 2px" in text
 
 
 def test_job_table_progress_reports_100_percent_once_the_job_reports_it() -> None:
@@ -271,7 +284,7 @@ def test_job_table_progress_reports_100_percent_once_the_job_reports_it() -> Non
         ]
     )
 
-    assert "100%" in text
+    assert "100.0%" in text
 
 
 def test_job_table_progress_bar_width_stays_inside_its_track() -> None:

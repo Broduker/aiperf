@@ -111,6 +111,52 @@ class TestListJobs:
 
 class TestGetJob:
     @pytest.mark.asyncio
+    async def test_current_epoch_returns_live_status_and_progress(
+        self, tmp_path: Path
+    ) -> None:
+        cr = _aiperf_job_cr()
+        cr["status"].update(
+            {
+                "runEpoch": 1792676455149719,
+                "phases": {
+                    "profiling": {"requestsTotal": 312299, "requestsCompleted": 100}
+                },
+                "liveMetrics": {
+                    "metrics": {"output_token_throughput": {"avg": 1234.5}}
+                },
+            }
+        )
+        mock_custom = MagicMock(get_namespaced_custom_object=AsyncMock(return_value=cr))
+        mock_core = MagicMock(
+            list_namespaced_pod=AsyncMock(return_value=MagicMock(items=[]))
+        )
+        app = _make_app(MagicMock(), tmp_path)
+        with (
+            patch(
+                "aiperf.kubernetes.client.client.CustomObjectsApi",
+                return_value=mock_custom,
+            ),
+            patch("aiperf.kubernetes.client.client.CoreV1Api", return_value=mock_core),
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    "/api/v1/jobs/aiperf-benchmarks/test-bench?epoch=1792676455149719"
+                )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["job"]["phase"] == "Running"
+        assert payload["status"]["runEpoch"] == 1792676455149719
+        assert payload["status"]["phases"]["profiling"]["requestsTotal"] == 312299
+        assert (
+            payload["status"]["liveMetrics"]["metrics"]["output_token_throughput"][
+                "avg"
+            ]
+            == 1234.5
+        )
+
+    @pytest.mark.asyncio
     async def test_get_job_found(self):
         mock_api = MagicMock()
         cr = _aiperf_job_cr()

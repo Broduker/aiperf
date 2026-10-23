@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { html } from 'htm/preact';
-import { fmtInt } from '../lib/format.js';
+import { fmtInt, fmtNumber, progressPercent } from '../lib/format.js';
 
 /**
  * Phase progress bar row.
@@ -22,15 +22,15 @@ export function PhaseBar({ phases }) {
     <div class="phase-bar" style="min-width:0;max-width:100%">
       ${phases.map((phase) => {
         const pct =
-          phase.total > 0 ? Math.round((phase.completed / phase.total) * 100) : 0;
+          phase.progressPercent ?? (phase.total > 0 ? (phase.completed / phase.total) * 100 : 0);
         const done = phase.completed >= phase.total && phase.total > 0;
         // Math.round carries 99.5%+ up to 100, so 999 of 1000 rendered a full
         // bar, a "100%" tooltip and aria-valuenow=100 while the phase was
         // still labelled "in progress" -- three readouts contradicting each
         // other, and a screen reader announcing a phase as complete before it
         // was. Reserve 100 for phases that actually finished; an unfinished
-        // phase tops out at 99. When done, clamp any over-count back to 100.
-        const boundedPct = done ? Math.min(100, pct) : Math.min(99, pct);
+        // phase tops out at 99.9. When done, clamp any over-count back to 100.
+        const boundedPct = done ? Math.min(100, pct) : Math.min(99.9, progressPercent(pct) ?? 0);
         const active = !done && phase.completed > 0;
         const statusClass = done
           ? 'phase-bar-item--done'
@@ -39,7 +39,7 @@ export function PhaseBar({ phases }) {
           : 'phase-bar-item--pending';
         const statusLabel = done ? 'done' : active ? 'in progress' : 'pending';
         const tooltip =
-          `${phase.name}: ${statusLabel} — ${fmtInt(phase.completed)} of ${fmtInt(phase.total)} (${boundedPct}%)`;
+          `${phase.name}: ${statusLabel} — ${fmtInt(phase.completed)} of ${fmtInt(phase.total)} (${fmtNumber(boundedPct, 1)}%)`;
 
         return html`
           <div
@@ -52,13 +52,13 @@ export function PhaseBar({ phases }) {
             <div class="phase-bar-header" style="min-width:0;gap:4px">
               <span class="phase-bar-name" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${phase.name}</span>
               <span class="phase-bar-fraction" style="flex-shrink:0">
-                ${fmtInt(phase.completed)}/${fmtInt(phase.total)}
+                ${fmtInt(phase.completed)}/${fmtInt(phase.total)} · ${fmtNumber(boundedPct, 1)}%
               </span>
             </div>
             <div class="phase-bar-track">
               <div
                 class="phase-bar-fill"
-                style=${'width: ' + boundedPct + '%'}
+                style=${'width: ' + boundedPct + '%' + (boundedPct > 0 ? '; min-width: 2px' : '')}
                 role="progressbar"
                 aria-valuenow=${boundedPct}
                 aria-valuemin="0"

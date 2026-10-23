@@ -130,7 +130,12 @@ def test_dashboard_helpers_do_not_currently_export_namespace_or_model_filters() 
         console.log(JSON.stringify(Object.keys(helpers).sort()));
     """
 
-    assert json.loads(run_node(script)) == ["isRecentJob", "jobCreatedTs", "recentJobs"]
+    assert json.loads(run_node(script)) == [
+        "isRecentJob",
+        "jobCreatedTs",
+        "jobProgressPercent",
+        "recentJobs",
+    ]
 
 
 def test_every_dashboard_poller_is_named() -> None:

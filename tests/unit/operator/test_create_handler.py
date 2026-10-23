@@ -20,6 +20,7 @@ import kopf
 import pytest
 
 from aiperf.operator.handlers.create import on_create
+from aiperf.operator.results_layout import epoch_key_from_body
 from tests.harness.operator import (
     build_minimal_aiperfjob_spec,
     build_sample_body,
@@ -127,6 +128,7 @@ async def test_on_create_persistence_success_then_jobset_created():
     """H1: happy path — persistence runs before JobSet and both succeed."""
     spec = build_minimal_aiperfjob_spec()
     body = build_sample_body()
+    status_patch = _status_patch()
 
     call_order: list[str] = []
 
@@ -193,10 +195,11 @@ async def test_on_create_persistence_success_then_jobset_created():
             name="test-job",
             namespace="default",
             uid="abc-123",
-            patch=_status_patch(),
+            patch=status_patch,
         )
 
     assert "jobSetName" in result
+    assert status_patch.status["runEpoch"] == int(epoch_key_from_body(body))
     # Persistence runs before JobSet creation
     save_idx = call_order.index("save")
     index_idx = call_order.index("index")

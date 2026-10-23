@@ -31,7 +31,7 @@ def _source(path: Path) -> str:
 def test_phase_bar_zero_totals_stay_pending_with_zero_percent() -> None:
     src = _source(_PHASE_BAR_JS)
 
-    assert "phase.total > 0 ? Math.round" in src
+    assert "phase.total > 0 ? (phase.completed / phase.total) * 100" in src
     assert ": 0" in src
     assert "phase.completed >= phase.total && phase.total > 0" in src
 

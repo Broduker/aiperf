@@ -470,6 +470,7 @@ def _finalize_success(
     events.created(body, job_id, total_workers)
 
     status.set_phase(Phase.PENDING)
+    status.set_run_epoch(int(epoch_key_from_body(body)))
     patch.status["startTime"] = format_timestamp()
     patch.status["jobId"] = job_id
     patch.status["jobSetName"] = deployment.jobset_name

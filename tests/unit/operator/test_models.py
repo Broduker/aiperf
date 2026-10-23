@@ -153,6 +153,34 @@ class TestMetricsSummary:
         assert result["total_requests"] == 60
         assert result["error_rate"] == pytest.approx(0.5)
 
+    def test_canonical_error_rate_survives_repeated_summary_projection(self) -> None:
+        metrics = {
+            "completed_request_count": {"avg": 100},
+            "request_count": {"avg": 97},
+            "request_error_rate": {"unit": "%", "avg": 3.0},
+        }
+        first = MetricsSummary.from_metrics(metrics).to_status_dict()
+        second = MetricsSummary.from_metrics(first).to_status_dict()
+        assert first["request_error_rate"] == metrics["request_error_rate"]
+        assert second["request_error_rate"] == first["request_error_rate"]
+        assert second["error_rate"] == pytest.approx(0.03)
+
+    def test_error_rate_is_not_derived_without_error_count(
+        self,
+    ) -> None:
+        metrics = {
+            "completed_request_count": {"avg": 100},
+            "request_count": {"avg": 97},
+        }
+        assert "error_rate" not in MetricsSummary.from_metrics(metrics).to_status_dict()
+
+    def test_small_canonical_error_percent_retains_precision(self) -> None:
+        result = MetricsSummary.from_metrics(
+            {"request_error_rate": {"avg": 0.004}}
+        ).to_status_dict()
+        assert result["request_error_rate"]["avg"] == 0.004
+        assert result["error_rate"] == pytest.approx(0.00004)
+
     def test_from_metrics_all_errors_no_request_count(self) -> None:
         """A fully-failed run (``request_count`` absent, only
         ``error_request_count`` present) still reports its total and a 1.0

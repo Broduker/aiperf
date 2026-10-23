@@ -37,3 +37,13 @@ def test_recent_jobs_includes_failed_jobs_in_created_order() -> None:
         "new-error",
         "old-completed",
     ]
+
+
+def test_progress_preserves_small_percentages_and_does_not_round_up_completion() -> (
+    None
+):
+    script = f"""
+        import {{ jobProgressPercent }} from {DASHBOARD_HELPERS_PATH.as_uri()!r};
+        console.log(JSON.stringify([null, 0, 0.01, 0.1, 0.4, 99.99, 100, NaN].map(jobProgressPercent)));
+    """
+    assert json.loads(run_node(script)) == [None, 0, 0.01, 0.1, 0.4, 99.9, 100, None]

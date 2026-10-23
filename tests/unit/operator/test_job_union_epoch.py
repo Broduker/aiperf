@@ -229,6 +229,7 @@ async def test_find_any_job_epoch_drops_live_half(tmp_path: Path) -> None:
         phase="Running",
         job_id="j1",
         throughput_rps=999.0,
+        run_epoch="1714069400",
     )
     with patch.object(job_union, "find_aiperf_job", AsyncMock(return_value=live)):
         rec = await job_union.find_any_job(
@@ -241,6 +242,34 @@ async def test_find_any_job_epoch_drops_live_half(tmp_path: Path) -> None:
     assert rec is not None
     assert rec.source == "archived"
     assert rec.throughput_rps == 100.0
+
+
+@pytest.mark.asyncio
+async def test_find_any_job_current_epoch_returns_live_without_summary(
+    tmp_path: Path,
+) -> None:
+    from aiperf.kubernetes.models import AIPerfJobInfo
+    from aiperf.operator import job_union
+
+    epoch = "1792676455149719"
+    (tmp_path / "bench" / "j1" / epoch).mkdir(parents=True)
+    live = AIPerfJobInfo(
+        name="j1",
+        namespace="bench",
+        job_id="j1",
+        phase="Running",
+        run_epoch=epoch,
+        progress_percent=0.1,
+        output_token_throughput_tps=1234.5,
+    )
+    with patch.object(job_union, "find_aiperf_job", AsyncMock(return_value=live)):
+        result = await job_union.find_any_job(
+            None, tmp_path, "bench", "j1", epoch=epoch
+        )
+    assert result is live
+    assert result.phase == "Running"
+    assert result.progress_percent == 0.1
+    assert result.output_token_throughput_tps == 1234.5
 
 
 @pytest.mark.asyncio
