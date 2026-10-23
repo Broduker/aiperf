@@ -465,8 +465,9 @@ tablet widths; very narrow viewports are not a supported target.
 
 ---
 
-Cache-resumed jobs show the original Samples total, distinct Executed samples,
-and Sample Failure rate across runs. A failed sample is counted once until a
+Cache-resumed jobs retain the existing labels and layout. Reqs and Record
+Processing Total count distinct executed samples; Err % is the sample failure
+rate, and Success Rate is its complement. A failed sample is counted once until a
 verified success exists for its ID and request payload. Never-executed samples
 are excluded from the rate; successful recovery removes a historical failure.
 Overall progress counts successful samples against the original input total.

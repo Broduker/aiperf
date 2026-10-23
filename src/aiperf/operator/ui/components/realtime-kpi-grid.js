@@ -384,21 +384,21 @@ function ReliabilityTile({ summary, slos, resultCache, timeseries }) {
     <div class=${'kpi-tile kpi-tile--slo-' + kind} key="success-rate">
       <div class="kpi-tile-head">
         <div class="kpi-tile-label">
-          <span>${resultCache ? 'Sample Failure Rate' : 'Success Rate'}</span>
-          <span class="kpi-tile-primary-stat">${resultCache ? 'across runs' : 'reliability'}</span>
+          <span>Success Rate</span>
+          <span class="kpi-tile-primary-stat">reliability</span>
         </div>
         <span class=${'kpi-chip kpi-chip--' + kind}>
           ${kind === 'good' ? '✓' : '✗'}
-          <span class="kpi-chip-thresh">${resultCache ? fmtInt(errVal) + ' unsuccessful' : (kind === 'good' ? '0 errors' : errorLabel)}</span>
+          <span class="kpi-chip-thresh">${kind === 'good' ? '0 errors' : errorLabel}</span>
         </span>
       </div>
       <div class="kpi-big">
-        <span class="kpi-big-val">${fmtPassRate(resultCache ? rate : success, 2)}</span>
+        <span class="kpi-big-val">${fmtPassRate(success, 2)}</span>
       </div>
       <${Sparkline} points=${resultCache ? [] : sparkPoints} stroke=${sparkStroke} fill=${sparkFill}
                     width=${140} height=${26} />
       <div class="kpi-tile-sub">
-        <span>${resultCache ? 'unsuccessful / executed samples' : 'errors'}</span>
+        <span>errors</span>
         <span class="kpi-tile-sub-val">${totalRequests != null
           ? fmtInt(errVal ?? 0) + ' of ' + fmtInt(totalRequests)
           : errorLabel}</span>

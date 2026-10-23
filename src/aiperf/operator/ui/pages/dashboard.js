@@ -408,8 +408,7 @@ export function Dashboard() {
               { label: 'OutTok', value: job.outputTokenThroughputTps, fmt: v => fmtInt(v), unit: 'tok/s', help: 'Output token throughput — tokens generated per second across all in-flight requests' },
               { label: 'P99', value: job.latencyP99Ms, fmt: v => fmtMilliseconds(v), unit: 'ms', help: '99th-percentile end-to-end request latency' },
               { label: 'ITL', value: job.interTokenLatencyMs, fmt: v => fmtMilliseconds(v), unit: 'ms', help: 'Inter-Token Latency — average time between successive output tokens' },
-              { label: job.resultCache ? 'Executed' : 'Reqs', value: job.totalRequests, fmt: v => fmtInt(v), unit: '', help: job.resultCache ? 'Distinct samples executed across all runs' : 'Total requests issued so far in this run' },
-              { label: 'Samples', value: job.resultCache?.totalSamples, fmt: v => fmtInt(v), unit: '', help: 'Total samples in the original input, including historical cached successes' },
+              { label: 'Reqs', value: job.totalRequests, fmt: v => fmtInt(v), unit: '', help: job.resultCache ? 'Distinct samples executed across all runs' : 'Total requests issued so far in this run' },
             ].filter(m => m.value != null);
 
             const goToJob = () => navigate(buildJobPath(job));
@@ -465,7 +464,7 @@ export function Dashboard() {
                     `)}
                     ${errPctValue != null ? html`
                       <div class="live-metric" title=${job.resultCache ? 'Distinct executed samples without a verified success across all runs / distinct executed samples' : 'Errored requests as % of total — ' + (errPctValue >= 5 ? 'high error rate, investigate' : errPctValue >= 1 ? 'elevated error rate' : 'within tolerance')}>
-                        <span class="live-metric-label">${job.resultCache ? 'Sample Failure' : 'Err'}</span>
+                        <span class="live-metric-label">Err</span>
                         <span class="live-metric-value" style="color:${errColor}">
                           ${errPctValue >= 5 ? html`<span aria-label="high">! </span>` : null}${fmtNumber(errPctValue, errPctValue < 1 ? 2 : 1)}%
                         </span>
