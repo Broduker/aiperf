@@ -75,9 +75,4 @@ def test_condition_chips_hide_success_noise_and_prettify_warnings() -> None:
             "label": "Preflight warnings",
             "className": "condition-badge--progress",
         },
-        {
-            "type": "Failed",
-            "label": "Failed",
-            "className": "condition-badge--false",
-        },
     ]

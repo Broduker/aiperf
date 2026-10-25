@@ -45,38 +45,44 @@ function conditionBadge(condition) {
   };
 }
 
-function falseTerminalConditionTypes(conditions) {
-  const types = new Set();
+function terminalConditionStatuses(conditions) {
+  const statuses = new Map();
 
   for (const condition of conditions ?? []) {
-    if ((condition.status ?? '').toLowerCase() !== 'false') continue;
-    if (condition.type === 'Complete' || condition.type === 'Failed') types.add(condition.type);
+    if (condition.type !== 'Complete' && condition.type !== 'Failed') continue;
+    statuses.set(condition.type, (condition.status ?? '').toLowerCase());
   }
 
-  return types;
+  return statuses;
 }
 
-function shouldHideCondition(condition, terminalFalseTypes) {
+function shouldHideCondition(condition, terminalStatuses) {
   const status = (condition.status ?? '').toLowerCase();
   if (status === 'true') return true;
 
-  return terminalFalseTypes.size === 2 && terminalFalseTypes.has(condition.type);
+  if (status !== 'false' || (condition.type !== 'Complete' && condition.type !== 'Failed')) {
+    return false;
+  }
+
+  const counterpart = condition.type === 'Complete' ? 'Failed' : 'Complete';
+  const counterpartStatus = terminalStatuses.get(counterpart);
+  return counterpartStatus === 'true' || counterpartStatus === 'false';
 }
 
 export function visibleConditionBadges(conditions) {
-  const terminalFalseTypes = falseTerminalConditionTypes(conditions);
+  const terminalStatuses = terminalConditionStatuses(conditions);
   return (conditions ?? [])
-    .filter(condition => !shouldHideCondition(condition, terminalFalseTypes))
+    .filter(condition => !shouldHideCondition(condition, terminalStatuses))
     .map(conditionBadge);
 }
 
 export function visibleConditionBadgeSummary(conditions, limit) {
   const badges = [];
   let total = 0;
-  const terminalFalseTypes = falseTerminalConditionTypes(conditions);
+  const terminalStatuses = terminalConditionStatuses(conditions);
 
   for (const condition of conditions ?? []) {
-    if (shouldHideCondition(condition, terminalFalseTypes)) continue;
+    if (shouldHideCondition(condition, terminalStatuses)) continue;
     total += 1;
     if (badges.length < limit) badges.push(conditionBadge(condition));
   }
