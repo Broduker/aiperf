@@ -571,6 +571,13 @@ class ProgressClient:
         try:
             data = await self._request_with_retry(url)
             if data:
+                if data.get("partial") is True:
+                    logger.warning(
+                        "Controller %s reported partial exports: %s",
+                        controller_host,
+                        data.get("failed_exporters", []),
+                    )
+                    return None
                 return data.get("files", [])
             return None
         except (TimeoutError, aiohttp.ClientError, OSError, ApiException) as e:
@@ -672,7 +679,9 @@ class ProgressClient:
         async with (
             aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(
-                    total=OperatorEnvironment.RESULTS.DOWNLOAD_TIMEOUT_SECONDS
+                    total=None,
+                    connect=OperatorEnvironment.RESULTS.DOWNLOAD_TIMEOUT_SECONDS,
+                    sock_read=OperatorEnvironment.RESULTS.DOWNLOAD_TIMEOUT_SECONDS,
                 ),
                 connector=self._session.connector,
                 connector_owner=False,
@@ -827,7 +836,15 @@ class ProgressClient:
         results = await asyncio.gather(
             *[_download_one(f) for f in available], return_exceptions=True
         )
-        failed = [r for r in results if isinstance(r, BaseException)]
+        failed = [r for r in results if isinstance(r, BaseException) or r is None]
         if failed:
             logger.warning(f"{len(failed)}/{len(available)} file downloads failed")
+        for entry, result in zip(available, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "Failed to download %s: %r",
+                    entry["name"],
+                    result,
+                    exc_info=(type(result), result, result.__traceback__),
+                )
         return [r for r in results if isinstance(r, str)]

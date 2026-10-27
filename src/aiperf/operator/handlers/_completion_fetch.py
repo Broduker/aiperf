@@ -25,6 +25,7 @@ from aiperf.kubernetes.spec_converter import (
     DEFAULT_KEY_EXPORT_NAMES,
     key_export_names_from_body,
 )
+from aiperf.operator.artifact_names import required_raw_exports
 from aiperf.operator.client_cache import (
     acquire_progress_client,
     get_cancellation_event,
@@ -134,6 +135,8 @@ class _IncompleteResultsError(Exception):
         elif not self.downloaded:
             error = "Failed to download result files (metrics fetched)"
             logger.warning(f"File download failed for {job_id}, metrics retrieved")
+        else:
+            error = "Required result files are missing"
 
         return ControllerFetchResult(
             metrics=self.metrics,
@@ -371,7 +374,12 @@ async def _download_final_and_sidecar(
     _raise_if_cancelled(is_cancelled)
     sidecar_port = K8sEnvironment.PORTS.RESULTS_SIDECAR
     has_key_file = bool(key_files & set(state["downloaded"] or []))
-    if has_key_file or sidecar_port == K8sEnvironment.PORTS.API_SERVICE:
+    has_required_files = state.get("required_files", frozenset()) <= set(
+        state["downloaded"] or []
+    )
+    if (
+        has_key_file and has_required_files
+    ) or sidecar_port == K8sEnvironment.PORTS.API_SERVICE:
         return
 
     async with ProgressClient(port=sidecar_port) as sidecar_client:
@@ -493,6 +501,7 @@ async def fetch_results_with_retry(
     # Use None (not yet attempted) vs [] (attempted, no files) to avoid
     # treating a valid empty download list as "not yet fetched".
     state: dict[str, Any] = {"metrics": None, "downloaded": None, "checkpoints": None}
+    state["required_files"] = required_raw_exports((body or {}).get("spec"))
     key_files = key_export_names_from_body(body).names
 
     async def _fetch_once() -> ControllerFetchResult:
@@ -571,7 +580,9 @@ async def _fetch_once_into_state(
     )
 
     if state["downloaded"] is not None:
-        if key_files & set(state["downloaded"]):
+        if key_files & set(state["downloaded"]) and state.get(
+            "required_files", frozenset()
+        ) <= set(state["downloaded"]):
             return ControllerFetchResult(
                 metrics=state["metrics"],
                 downloaded=state["downloaded"],

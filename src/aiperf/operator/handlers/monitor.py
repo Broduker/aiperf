@@ -1277,6 +1277,9 @@ async def _run_worker_and_progress_phase(
     sb: StatusBuilder,
 ) -> None:
     """Worker aggregation, pod-restart scan, salvage, and progress polling."""
+    if key in _shutdown_sent:
+        return
+
     workers_ready, workers_succeeded, total_workers = _update_worker_counts(
         status=status, jobset_status=jobset_status, spec=spec, sb=sb
     )

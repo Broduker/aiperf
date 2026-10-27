@@ -103,7 +103,7 @@ class _ResultsSettings(BaseSettings):
         default=300.0,
         gt=0,
         le=3600,
-        description="Total timeout in seconds for one controller result-file download.",
+        description="Connection and read-idle timeout in seconds for a controller result-file download; progressing downloads have no total time limit.",
     )
     DOWNLOAD_MAX_CONCURRENCY: int = Field(
         default=5,

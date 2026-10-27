@@ -110,7 +110,7 @@ class TestSaveZstdPassthrough:
     @pytest.mark.asyncio
     async def test_writes_bytes_verbatim_to_zst_suffix(self, tmp_path: Path) -> None:
         """Verify the response body is written byte-for-byte to ``<name>.zst``."""
-        payload = b"already-zstd-compressed-bytes"
+        payload = zstd.ZstdCompressor().compress(b"already-zstd-compressed-bytes")
         response = _fake_response([payload[:10], payload[10:]])
         dest = tmp_path / "results.json"
 
@@ -123,12 +123,13 @@ class TestSaveZstdPassthrough:
     @pytest.mark.asyncio
     async def test_empty_chunks_are_skipped(self, tmp_path: Path) -> None:
         """Verify empty chunks are skipped (no zero-byte write calls)."""
-        response = _fake_response([b"", b"abc", b""])
+        payload = zstd.ZstdCompressor().compress(b"abc")
+        response = _fake_response([b"", payload, b""])
         dest = tmp_path / "x.bin"
 
         await save_zstd_passthrough(response, dest)
 
-        assert (tmp_path / "x.bin.zst").read_bytes() == b"abc"
+        assert (tmp_path / "x.bin.zst").read_bytes() == payload
 
     @pytest.mark.asyncio
     async def test_mid_stream_failure_preserves_final_and_removes_part(
@@ -141,7 +142,8 @@ class TestSaveZstdPassthrough:
         final_path.write_bytes(b"previous-complete-frame")
 
         with pytest.raises(aiohttp.ClientPayloadError, match="mid-stream"):
-            await save_zstd_passthrough(_failing_response(b"partial-frame"), dest)
+            payload = zstd.ZstdCompressor().compress(b"partial-frame")
+            await save_zstd_passthrough(_failing_response(payload[:5]), dest)
 
         assert final_path.read_bytes() == b"previous-complete-frame"
         assert not part_path.exists()

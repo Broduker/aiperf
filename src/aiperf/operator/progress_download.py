@@ -53,11 +53,15 @@ async def save_zstd_passthrough(
     """Atomically stream a zstd-encoded response body to ``<name>.zst``."""
     zst_path = dest_path.parent / (dest_path.name + ".zst")
     part_path = zst_path.parent / (zst_path.name + ".part")
+    verifier = zstd.ZstdDecompressor().decompressobj()
     try:
         async with aiofiles.open(part_path, "wb") as f:
             async for chunk in response.content.iter_chunked(CHUNK_SIZE):
                 if chunk:
+                    verifier.decompress(chunk)
                     await f.write(chunk)
+        if not verifier.eof:
+            raise zstd.ZstdError("Incomplete zstd result download")
         os.replace(part_path, zst_path)
     finally:
         part_path.unlink(missing_ok=True)

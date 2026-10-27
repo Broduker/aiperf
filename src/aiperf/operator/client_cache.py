@@ -63,6 +63,7 @@ class _JobCacheState:
     progress_clients: dict[str, ProgressClient] = {}
     client_cache_lock: asyncio.Lock = asyncio.Lock()
     progress_client_leases: dict[str, int] = {}
+    pending_client_closes: set[str] = set()
 
     # Tracks (pod_name, restart_count) pairs already warned about per
     # job. Prevents emitting the same pod restart event every tick.
@@ -96,6 +97,7 @@ class _JobCacheState:
 _progress_clients = _JobCacheState.progress_clients
 _client_cache_lock = _JobCacheState.client_cache_lock
 _progress_client_leases = _JobCacheState.progress_client_leases
+_pending_client_closes = _JobCacheState.pending_client_closes
 _warned_pod_restarts = _JobCacheState.warned_pod_restarts
 _shutdown_sent = _JobCacheState.shutdown_sent
 _cancellation_events = _JobCacheState.cancellation_events
@@ -236,6 +238,8 @@ async def release_progress_client(key: str) -> None:
         leases = _progress_client_leases.get(key, 0)
         if leases <= 1:
             _progress_client_leases.pop(key, None)
+            if key in _pending_client_closes:
+                await _close_unlocked(key)
         else:
             _progress_client_leases[key] = leases - 1
         await _evict_idle_clients_unlocked()
@@ -272,14 +276,18 @@ async def _evict_idle_clients_unlocked(*, needs_room: bool = False) -> None:
 
 
 async def close_progress_client(key: str) -> None:
-    """Close and remove a cached ProgressClient and dedup state for a job."""
+    """Close an idle client, or defer cleanup until its last owner releases it."""
     async with _client_cache_lock:
+        if _progress_client_leases.get(key):
+            _pending_client_closes.add(key)
+            return
         await _close_unlocked(key)
 
 
 async def _close_unlocked(key: str) -> None:
     """Close a cached ProgressClient without acquiring the lock (caller holds it)."""
     client = _progress_clients.pop(key, None)
+    _pending_client_closes.discard(key)
     _progress_client_leases.pop(key, None)
     if client is not None:
         await client.__aexit__(None, None, None)
@@ -731,6 +739,7 @@ def _reset_for_testing() -> None:
     """Clear all cached state. For use in tests only."""
     _progress_clients.clear()
     _progress_client_leases.clear()
+    _pending_client_closes.clear()
     _warned_pod_restarts.clear()
     _shutdown_sent.clear()
     _cancellation_events.clear()

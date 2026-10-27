@@ -4,16 +4,53 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import orjson
 
+from aiperf.common.path_safety import safe_read_template_path
 from aiperf.kubernetes.spec_converter import (
     DEFAULT_KEY_EXPORT_NAMES,
     KeyExportNames,
     key_export_names,
 )
+
+
+def required_raw_exports(spec: Mapping[str, Any] | None) -> frozenset[str]:
+    """Require the configured RAW delivery file independently of summary exports."""
+    benchmark = (spec or {}).get("benchmark")
+    if not isinstance(benchmark, Mapping):
+        return frozenset()
+    artifacts = benchmark.get("artifacts")
+    if not isinstance(artifacts, Mapping) or artifacts.get("raw") is not True:
+        return frozenset()
+    normalized = dict(spec)
+    normalized["benchmark"] = dict(benchmark, artifacts=dict(artifacts))
+    name = key_export_names(normalized).jsonl_name.removesuffix(".jsonl")
+    return frozenset({f"{name}_raw.jsonl"})
+
+
+def raw_exports_materialized(
+    run_dir: Path, spec: Mapping[str, Any] | None = None
+) -> bool:
+    """Check required RAW files on disk without loading large exports into memory."""
+    if spec is None:
+        serialized = safe_read_template_path(str(run_dir / "job_spec.json"))
+        if serialized is None:
+            return True
+        try:
+            spec = orjson.loads(serialized)
+        except orjson.JSONDecodeError:
+            return False
+        if not isinstance(spec, Mapping):
+            return False
+    required = required_raw_exports(spec)
+    return all(
+        (run_dir / name).is_file() or (run_dir / f"{name}.zst").is_file()
+        for name in required
+    )
 
 
 def key_export_names_from_run_dir(run_dir: Path) -> KeyExportNames:

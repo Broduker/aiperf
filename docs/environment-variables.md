@@ -659,7 +659,7 @@ Results fetching and storage settings.
 | `AIPERF_RESULTS_K8S_INIT_TIMEOUT_SEC` | `10.0` | > 0, ≤ 120 | Seconds the results-server waits for its Kubernetes client to initialize at startup before giving up and serving PVC-only. The live-job endpoints need a cluster, but every results, sweeps, and artifact route reads the disk, so an unreachable apiserver must degrade the server rather than prevent it from starting. |
 | `AIPERF_RESULTS_MAX_RETRIES` | `5` | ≥ 0, ≤ 50 | Max retries when fetching results from controller |
 | `AIPERF_RESULTS_RETRY_DELAY` | `2.0` | ≥ 0, ≤ 60 | Seconds between result fetch retries |
-| `AIPERF_RESULTS_DOWNLOAD_TIMEOUT_SECONDS` | `300.0` | > 0, ≤ 3600 | Total timeout in seconds for one controller result-file download. |
+| `AIPERF_RESULTS_DOWNLOAD_TIMEOUT_SECONDS` | `300.0` | > 0, ≤ 3600 | Connection and read-idle timeout in seconds for a controller result-file download; progressing downloads have no total time limit. |
 | `AIPERF_RESULTS_DOWNLOAD_MAX_CONCURRENCY` | `5` | ≥ 1, ≤ 128 | Maximum result files downloaded concurrently from one controller. |
 | `AIPERF_RESULTS_RETRY_MAX_DELAY_SECONDS` | `30.0` | ≥ 0, ≤ 600 | Maximum backoff delay in seconds between result-fetch attempts. |
 | `AIPERF_RESULTS_RETRY_BACKOFF_MULTIPLIER` | `2.0` | ≥ 1.0, ≤ 10.0 | Multiplicative backoff factor between result-fetch attempts. |

@@ -37,6 +37,7 @@ from aiperf.kubernetes.spec_converter import (
     key_export_names_from_body,
 )
 from aiperf.operator import events, runs_index
+from aiperf.operator.artifact_names import raw_exports_materialized
 from aiperf.operator.client_cache import (
     acquire_progress_client,
     get_cancellation_event,
@@ -137,6 +138,8 @@ def _key_files_materialized(
     dest_dir = run_dir(OperatorEnvironment.RESULTS.DIR, namespace, job_id, epoch)
     if not dest_dir.exists():
         return False
+    if not raw_exports_materialized(dest_dir):
+        return False
     for key in key_names:
         for candidate in ((dest_dir / key), (dest_dir / f"{key}.zst")):
             if candidate.is_file() and _key_artifact_valid(candidate):
@@ -208,6 +211,8 @@ def _recover_result_from_disk(
     epoch = epoch_key_from_body(body)
     dest_dir = run_dir(OperatorEnvironment.RESULTS.DIR, namespace, job_id, epoch)
     if not dest_dir.exists():
+        return result
+    if not raw_exports_materialized(dest_dir, body.get("spec")):
         return result
 
     on_disk = sorted(
@@ -1335,7 +1340,8 @@ def _demote_unmaterialized_result_files(
     if not flags.has_files:
         return flags
     epoch = epoch_key_from_body(body)
-    if _key_files_materialized(
+    dest_dir = run_dir(OperatorEnvironment.RESULTS.DIR, namespace, job_id, epoch)
+    if raw_exports_materialized(dest_dir, body.get("spec")) and _key_files_materialized(
         namespace,
         job_id,
         epoch,

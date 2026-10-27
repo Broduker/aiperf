@@ -157,7 +157,9 @@ async def test_result_download_timeout_override_reaches_aiohttp(
     )
 
     assert downloaded is False
-    assert captured["timeout"].total == 23.0
+    assert captured["timeout"].total is None
+    assert captured["timeout"].connect == 23.0
+    assert captured["timeout"].sock_read == 23.0
 
 
 @pytest.mark.asyncio

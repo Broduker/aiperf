@@ -238,12 +238,12 @@ class TestIncompleteResultsErrorToFetchResult:
         assert out.error == "Failed to download result files (metrics fetched)"
         assert out.metrics == {"k": "v"}
 
-    def test_has_metrics_and_downloaded_yields_empty_error(self) -> None:
+    def test_incomplete_download_retains_error_despite_metrics(self) -> None:
         err = _IncompleteResultsError(
             metrics={"k": "v"}, downloaded=["a.json"], checkpoints=["checkpoints/c1"]
         )
         out = err.to_fetch_result("ns/job")
-        assert out.error == ""
+        assert out.error == "Required result files are missing"
         assert out.metrics == {"k": "v"}
         assert out.downloaded == ["a.json"]
         assert out.checkpoints == ["checkpoints/c1"]

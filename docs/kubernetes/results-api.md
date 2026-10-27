@@ -546,6 +546,18 @@ curl http://localhost:8081/api/v1/results/my-benchmarks/aiperf-bench-7f2a/runs/1
 
 The `name` field is the **display name** (zstd suffix stripped); use it as the `{filename}` path parameter on the download endpoint. `stored_name` is the actual file on disk. `ready` reflects the sidecar's readiness marker; `summary_available` says whether the `profile_export` quick-export alias will resolve for this run.
 
+When `benchmark.artifacts.raw` is enabled, the operator requires the configured
+`*_raw.jsonl` delivery file (or its stored `.zst` form) as well as a summary before
+publishing final readiness or deleting the backing JobSet. A missing RAW file
+triggers result-sidecar recovery and bounded fetch retries, even when the summary
+has already downloaded. Disk recovery applies the same RAW requirement. A
+controller listing marked `partial` is not accepted as a complete export.
+
+Result-file downloads use `AIPERF_RESULTS_DOWNLOAD_TIMEOUT_SECONDS` as a connection
+and read-idle timeout. Downloads that continue receiving bytes can exceed this
+duration. Zstd bodies are checked incrementally before their staging files are
+promoted, so a truncated compressed RAW file cannot be published as complete.
+
 **Status codes**
 
 - `200` — success

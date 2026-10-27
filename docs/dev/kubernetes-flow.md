@@ -830,6 +830,11 @@ the deadline.
 
 ### Completion Signals
 
+Completion owns its leased progress client until result fetching finishes.
+Watchdog recovery skips an active completion owner, and explicit client cleanup
+is deferred until the last active lease is released. This prevents a stale
+heartbeat during a long export from interrupting the subsequent RAW download.
+
 - Controller receives `ALL_RECORDS_RECEIVED` message
 - Results available via API service
 - Services shut down cleanly
